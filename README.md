@@ -2,8 +2,6 @@
 
 ## doc-writer skill
 
-install:
-
 ```shell
-npx skills add hhttps://github.com/chanjarster/skills --skill doc-writer
+npx skills add https://github.com/chanjarster/skills --skill doc-writer
 ```

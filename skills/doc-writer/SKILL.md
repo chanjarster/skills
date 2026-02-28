@@ -129,7 +129,13 @@ project-docs/
 路径：`project-docs/tasks/task-xxx.md`
 文档内容要求：见 [task-xxx.md](references/task-xxx.md)
 
-完成任务的每个阶段后，同步更新 `task-xxx.md`。
+在编码过程中，适时在任务文档 `task-xxx.md` 中更新工作进度。
+
+### 任务归档
+
+路径：`project-docs/tasks/completed/task-xxx.md`
+
+当任务完成后，把任务文档移动到 `project-docs/tasks/completed/` 下。
 
 ## 要求
 
