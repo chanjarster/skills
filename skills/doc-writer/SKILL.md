@@ -68,15 +68,10 @@ project-docs/
 
 功能点的设计，包括功能描述、功能实现流程、业务规则、使用角色、界面设计要求等关键内容。
 
-### 模型设计文档
+### 代码设计文档
 
-路径：`project-docs/latest/[设计主题]/model-xxx.md`
-文档内容要求：见 [model-xxx.md](references/model-xxx.md)
-
-### 接口设计文档
-
-路径：`project-docs/latest/[设计主题]/api-xxx.md`
-文档内容要求：见 [api-xxx.md](references/api-xxx.md)
+路径：`project-docs/latest/[设计主题]/code-xxx.md`
+文档内容要求：见 [code-xxx.md](references/code-xxx.md)
 
 ### 静态HTML原型文件
 
@@ -106,15 +101,10 @@ project-docs/
 路径：`project-docs/changes/[变更主题]/chg-feat-xxx.md`
 文档内容要求：见 [chg-feat-xxx.md](references/chg-feat-xxx.md)
 
-### 模型设计变更
+### 代码设计变更
 
-路径：`project-docs/changes/[变更主题]/chg-model-xxx.md`
-文档内容要求：见 [chg-model-xxx.md](references/chg-model-xxx.md)
-
-### 接口设计变更
-
-路径：`project-docs/changes/[变更主题]/chg-api-xxx.md`
-文档内容要求：见 [chg-api-xxx.md](references/chg-api-xxx.md)
+路径：`project-docs/changes/[变更主题]/chg-code-xxx.md`
+文档内容要求：见 [chg-code-xxx.md](references/chg-code-xxx.md)
 
 ### 静态HTML原型（changes/[变更主题]/static-html/chg-page-xxx.html
 
