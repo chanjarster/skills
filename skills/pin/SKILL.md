@@ -52,8 +52,7 @@ pin-docs/
    - 创建六大类目录：`0-业务知识/`、`1-技术文档-X/`、`2-UI设计/`、`3-规范文档-X/`、`4-任务日志/`、`5-assets/`
    - 创建各子类目的子目录（参见上方目录树）
 3. 为每个大类创建对应的 `0-索引.md`（参考 `references/templates/index-template.md`）
-4. 创建 `0-业务知识/1-需求文档/0-overview.md`（参考 `references/templates/overview.md`）
-5. 初始化完成后，引导用户填写第一份文档（如 overview 或技术架构）
+4. 初始化完成后，引导用户填写第一份文档（如 overview 或技术架构）
 
 ### 2. 文档导航
 
