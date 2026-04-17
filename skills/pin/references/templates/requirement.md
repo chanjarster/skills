@@ -19,7 +19,6 @@ created: "{YYYY-MM-DD}"
 {该领域的关键业务名词和术语（Ubiquitous Language）}
 
 - **{名词}**：{定义}
-- **{名词}**：{定义}
 
 ## 业务规则
 
