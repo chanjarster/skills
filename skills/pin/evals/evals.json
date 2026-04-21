@@ -3,38 +3,81 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "帮我初始化 Pin 文档系统，项目是一个电商后台管理系统，主要功能包括商品管理、订单管理、用户管理",
-      "expected_output": "在项目根目录创建完整的 pin-docs 目录结构，包含六大类带编号目录（0-业务知识、1-技术文档-X、2-UI设计、3-规范文档-X、4-任务日志、5-assets），每个子目录下有 0-索引.md，需求文档下有 0-overview.md 且内容包含电商相关领域清单",
+      "name": "project-initialization",
+      "prompt": "我正在开始一个新项目——一个在线教育平台，主要功能包括课程管理、学员管理、支付结算、讲师管理。帮我初始化 Pin 文档系统。",
+      "expected_output": "在项目根目录创建完整的 pin-docs 目录结构，包含六大类带编号目录（0-业务知识、1-技术文档-X、2-UI设计、3-规范文档-X、4-任务日志、5-assets），每个子目录下有 0-索引.md，需求文档下有 0-overview.md 且内容包含在线教育相关领域清单",
       "files": [],
       "assertions": [
-        "correct-directory-structure: Output contains all 6 numbered top-level directories (0-业务知识, 1-技术文档-X, 2-UI设计, 3-规范文档-X, 4-任务日志, 5-assets)",
+        "top-level-dirs-exist: All 6 numbered top-level directories exist (0-业务知识, 1-技术文档-X, 2-UI设计, 3-规范文档-X, 4-任务日志, 5-assets)",
         "index-files-created: Each top-level directory has a 0-索引.md file",
-        "overview-has-ecommerce-content: The 0-overview.md file contains ecommerce-related domains (商品管理, 订单管理, 用户管理)",
-        "subdirectories-correct: Subdirectories exist (1-需求文档/, 2-操作手册/, 1-技术架构.md, etc.)"
+        "overview-has-education-content: The 0-overview.md file contains education-related domains (课程管理, 学员管理, 支付结算, 讲师管理)",
+        "subdirectories-correct: Subdirectories exist (1-需求文档/, 2-操作手册/, 1-技术架构.md, 2-开发环境.md, 3-代码地图/, 4-研究记录/, 1-UI设计图/, 2-UI切图/, 1-git规范.md, 2-代码规范.md, 3-示例/)",
+        "task-status-dirs-exist: 任务日志 has all 3 status subdirs (0-未开始, 1-进行中, 2-已完成)"
       ]
     },
     {
       "id": 2,
-      "prompt": "创建一个用户管理模块的需求文档，该模块负责用户注册、登录、权限管理（RBAC），权限分为超级管理员、普通管理员、普通用户三级",
-      "expected_output": "在 pin-docs/0-业务知识/1-需求文档/ 下创建用户管理需求文档（文件名含序号和业务领域名），内容包含边界上下文、核心概念、业务规则，至少用 mermaid 绘制一个业务流程图，同时更新 0-索引.md",
-      "files": ["pin-docs/0-业务知识/0-索引.md"],
+      "name": "business-requirement-and-manual",
+      "prompt": "帮我创建支付结算模块的需求文档和操作手册。支付结算包括课程购买支付、退款处理、对账三个子功能。退款需要管理员审核，只有管理员可以发起。对账每天凌晨自动执行。",
+      "expected_output": "在 pin-docs/0-业务知识/1-需求文档/ 下创建支付结算需求文档（文件名含序号和业务领域名），内容包含边界上下文、核心概念、业务规则，至少用 mermaid 绘制一个业务流程图。同时在 2-操作手册/ 下创建对应的操作手册。更新 0-索引.md",
+      "files": [],
       "assertions": [
-        "requirement-file-named-correctly: A requirement file exists under 0-业务知识/1-需求文档/ with a numbered name like 1-用户管理.md",
-        "rbac-content: The document contains RBAC content with three permission levels (超级管理员, 普通管理员, 普通用户)",
-        "mermaid-diagram: The document contains at least one mermaid flowchart (```mermaid blocks)",
-        "index-updated: 0-业务知识/0-索引.md contains a reference to the user management requirement document"
+        "requirement-file-named-correctly: A requirement file exists under 0-业务知识/1-需求文档/ with a numbered name like 1-支付结算.md",
+        "requirement-has-bounded-context: The requirement document contains a boundary context section (边界上下文 or Bounded Context)",
+        "requirement-has-mermaid-diagram: The requirement document contains at least one mermaid code block",
+        "requirement-covers-refund-audit: The document mentions refund requires admin approval (退款需要管理员审核)",
+        "requirement-covers-reconciliation: The document mentions daily reconciliation (对账每天凌晨自动执行)",
+        "operation-manual-exists: An operation manual file exists under 0-业务知识/2-操作手册/ with matching domain name",
+        "index-updated: 0-业务知识/0-索引.md references both the requirement and operation manual documents"
       ]
     },
     {
       "id": 3,
-      "prompt": "创建一个新的开发任务，标题为'实现 OAuth2 第三方登录'，描述为'对接微信和 Google 的 OAuth2 登录接口'，预计分三步：1. 技术调研 2. 接口开发 3. 联调测试",
-      "expected_output": "在 pin-docs/4-任务日志/0-未开始/ 下创建以当前日期时间开头的任务目录，目录内包含 task.md（描述任务背景和目标）和 plan.md（包含三步开发计划），更新任务日志 0-索引.md",
-      "files": ["pin-docs/4-任务日志/0-索引.md"],
+      "name": "tech-documents-suite",
+      "prompt": "帮我创建技术架构文档、开发环境文档和代码地图。项目技术栈是 React 18 + Next.js 14 + TypeScript 前端，Node.js 20 + NestJS 10 后端，PostgreSQL 15 数据库，Prisma ORM。微服务包括课程服务、学员服务、支付服务。本地开发需要 Node.js 20+、PostgreSQL、Redis。启动命令是 npm run dev。",
+      "expected_output": "在 pin-docs/1-技术文档-X/ 下创建 1-技术架构.md（包含技术栈、微服务清单、服务关系图）、2-开发环境.md（包含启动步骤、前置条件、Debug方法）、3-代码地图/ 下创建 1-支付结算.md（代码清单、API清单、实体关系图）。更新 0-索引.md",
+      "files": [],
       "assertions": [
-        "task-directory-timestamp: A task directory exists under outputs/ with a yyMMdd-HHmm format prefix (e.g., 260417-xxxx-实现OAuth2第三方登录)",
-        "task-md-exists: task.md exists in the task directory and describes OAuth2 login context (mentions 微信 and Google OAuth2)",
-        "plan-md-exists: plan.md exists and contains three development steps: 技术调研, 接口开发, 联调测试",
-        "index-updated: An index file (0-索引.md) exists and references the OAuth2 task"
+        "tech-architecture-exists: 1-技术架构.md exists under 1-技术文档-X/",
+        "architecture-has-tech-stack: The architecture doc mentions React, Next.js, NestJS, PostgreSQL, Prisma",
+        "architecture-has-mermaid-diagram: The architecture doc contains at least one mermaid diagram (service relationships)",
+        "dev-environment-exists: 2-开发环境.md exists under 1-技术文档-X/",
+        "dev-env-has-startup-steps: The dev environment doc contains startup instructions (npm run dev or similar)",
+        "code-map-exists: A code map file exists under 3-代码地图/ with numbered naming",
+        "code-map-has-api-list: The code map contains an API清单 or API list section",
+        "tech-index-updated: 1-技术文档-X/0-索引.md references the created documents"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "task-creation-and-lifecycle",
+      "prompt": "帮我创建一个开发任务：实现课程搜索功能。任务背景：用户需要在大量课程中快速找到目标课程。任务目标：支持关键词搜索和分类筛选。验收标准：1. 支持按课程名称关键词搜索 2. 支持按课程分类筛选 3. 搜索结果按相关性排序。开发计划分三步：第一步做搜索 API 接口，第二步做前端搜索界面，第三步做搜索性能优化。",
+      "expected_output": "在 pin-docs/4-任务日志/0-未开始/ 下创建以当前日期时间开头的任务目录，目录内包含 task.md（描述任务背景、目标、验收标准）和 plan.md（包含三步开发计划），更新任务日志 0-索引.md",
+      "files": [],
+      "assertions": [
+        "task-directory-timestamp: A task directory exists under 4-任务日志/0-未开始/ with a yyMMdd-HHmm format prefix",
+        "task-md-exists: task.md exists in the task directory and describes course search functionality",
+        "task-has-acceptance-criteria: task.md contains acceptance criteria with checkboxes",
+        "plan-md-exists: plan.md exists and contains three development steps (搜索 API, 前端界面, 性能优化)",
+        "task-index-updated: 4-任务日志/0-索引.md references the course search task"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "convention-and-research",
+      "prompt": "帮我创建 git 规范和代码规范文档，以及一个研究记录。Git 规范：使用 Git Flow 分支模型，main 是生产分支，develop 是开发分支，feature/* 是功能分支。Commit 使用 Conventional Commits 格式。代码规范：使用 ESLint + Prettier，命名使用 camelCase，组件使用 PascalCase。研究主题：Next.js App Router 与 Pages Router 的对比，结论是 App Router 更适合新项目，支持 Server Components 和 Streaming。",
+      "expected_output": "在 pin-docs/3-规范文档-X/ 下创建 1-git规范.md（包含分支规范、commit规范、mermaid分支图）、2-代码规范.md（包含命名规范、工具配置）。在 1-技术文档-X/4-研究记录/ 下创建 Next.js Router 研究目录和 research.md。更新各目录的 0-索引.md",
+      "files": [],
+      "assertions": [
+        "git-convention-exists: 1-git规范.md exists under 3-规范文档-X/",
+        "git-has-branch-model: The git convention mentions Git Flow or branch model with main/develop/feature",
+        "git-has-mermaid-diagram: The git convention contains at least one mermaid diagram",
+        "code-convention-exists: 2-代码规范.md exists under 3-规范文档-X/",
+        "code-convention-has-naming: The code convention mentions naming conventions (camelCase or PascalCase)",
+        "research-record-exists: A research directory exists under 1-技术文档-X/4-研究记录/ containing research.md",
+        "research-has-findings: The research document contains core findings or conclusions about Next.js routers",
+        "convention-index-updated: 3-规范文档-X/0-索引.md references the convention documents",
+        "research-index-updated: 1-技术文档-X/0-索引.md references the research record"
       ]
     }
   ]
