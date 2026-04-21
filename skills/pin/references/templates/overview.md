@@ -1,6 +1,8 @@
 ---
 type: overview
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # 项目概述

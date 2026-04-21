@@ -3,6 +3,8 @@ type: task
 title: "{任务标题}"
 status: "未开始"
 created: "{YYYY-MM-DD HH:mm}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # 任务: {任务标题}

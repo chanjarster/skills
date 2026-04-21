@@ -1,6 +1,8 @@
 ---
 type: git-convention
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # Git 规范

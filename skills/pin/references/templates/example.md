@@ -2,6 +2,8 @@
 type: example
 category: "{示例类别}"
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # {示例名称}

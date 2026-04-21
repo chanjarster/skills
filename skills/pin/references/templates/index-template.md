@@ -1,6 +1,9 @@
 ---
 type: index
 description: "通用索引模板 - 列出目录下所有文档的关键词、摘要和路径"
+created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # {目录名称} 索引

@@ -2,6 +2,8 @@
 type: operation-manual
 domain: "{业务领域}"
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # {业务领域} 操作手册

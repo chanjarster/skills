@@ -1,6 +1,9 @@
 ---
 type: plan
 title: "{任务标题}"
+created: "{YYYY-MM-DD HH:mm}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # 开发计划: {任务标题}

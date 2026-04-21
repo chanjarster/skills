@@ -1,6 +1,8 @@
 ---
 type: code-convention
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # 代码规范

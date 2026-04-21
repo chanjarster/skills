@@ -2,6 +2,8 @@
 type: research
 topic: "{研究主题}"
 created: "{YYYY-MM-DD}"
+author: "{维护者}"
+maintained-by: pin skill
 ---
 
 # {研究主题}
