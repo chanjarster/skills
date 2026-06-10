@@ -11,3 +11,9 @@ npx skills add https://github.com/chanjarster/skills --skill doc-writer
 ```shell
 npx skills add https://github.com/chanjarster/skills --skill pin
 ```
+
+## dd-sync skill
+
+```shell
+npx skills add https://github.com/chanjarster/skills --skill dd-sync
+```
