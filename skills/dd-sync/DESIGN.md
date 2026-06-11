@@ -1,0 +1,763 @@
+# dd-sync 脚本设计文档
+
+## 1. 目标
+
+将 dd-sync 流程中的机械性工作（阶段二「准备钉钉文件夹」+ 阶段三「执行同步」）封装为 Python 脚本，由 AI 在阶段一完成后直接调用，从而：
+
+- **节省 token**：AI 不再逐文件循环、解析 frontmatter、拼装 dws 命令、写回 frontmatter
+- **加快速度**：脚本内部批量处理，不走 AI 的「思考→执行→观察」循环
+- **减少出错**：确定性操作由脚本保证，消除 AI 幻觉/遗漏
+
+## 2. 整体流程
+
+```
+用户 ──→ AI（阶段一：参数澄清）──→ 生成 dd-sync-cfg.json
+                                        │
+                    ┌───────────────────┘
+                    ▼
+              python sync.py --config dd-sync-cfg.json
+                    │
+                    ├── 阶段二：创建/验证钉钉文件夹，回填 node_id/doc_url
+                    │
+                    ├── 阶段三：遍历 .md → 判定新建/更新 → 调 dws → 写回 frontmatter
+                    │
+                    ▼
+              终端输出同步结果报告
+```
+
+AI 只需做一件事：运行 `python scripts/sync.py --config dd-sync-cfg.json`，然后向用户转述结果。
+
+## 3. 配置文件：`dd-sync-cfg.json`
+
+> `dd-sync-cfg.md` 模板删除，统一用 JSON。
+
+### 3.1 Schema
+
+```json
+{
+  "version": "1",
+  "source_paths": ["docs/", "notes/api-guide.md"],
+  "knowledge_base": {
+    "name": "智慧校园项目实施知识库",
+    "workspace_id": "<WORKSPACE_ID>"
+  },
+  "root_folder": {
+    "name": "项目文档",
+    "node_id": "",
+    "doc_url": ""
+  },
+  "folder_mapping": [
+    {
+      "local_dir": "docs/api",
+      "dingtalk_folder_name": "API文档",
+      "node_id": "",
+      "doc_url": ""
+    },
+    {
+      "local_dir": "docs/guide",
+      "dingtalk_folder_name": "",
+      "node_id": "",
+      "doc_url": ""
+    }
+  ]
+}
+```
+
+### 3.2 字段约定
+
+| 字段                                    | 类型     | 谁填     | 说明                                             |
+| --------------------------------------- | -------- | -------- | ------------------------------------------------ |
+| `version`                               | string   | AI       | 固定 `"1"`，预留升级空间                         |
+| `source_paths`                          | string[] | AI       | 项目根目录的相对路径，可混用目录和文件           |
+| `knowledge_base.name`                   | string   | AI       | 知识库名称（仅用于人类阅读）                     |
+| `knowledge_base.workspace_id`           | string   | AI       | 知识库 workspace_id，必填                        |
+| `root_folder.name`                      | string   | AI       | 目标根文件夹名                                   |
+| `root_folder.node_id`                   | string   | 脚本回填 | 创建/找到文件夹后填入                            |
+| `root_folder.doc_url`                   | string   | 脚本回填 | 创建/找到文件夹后填入                            |
+| `folder_mapping`                        | array    | AI       | 为空数组时表示无子目录映射，所有文档直放根文件夹 |
+| `folder_mapping[].local_dir`            | string   | AI       | 本地子目录路径（相对于 `source_paths` 中的目录） |
+| `folder_mapping[].dingtalk_folder_name` | string   | AI       | 空字符串 = 使用 `local_dir` 的末级目录名         |
+| `folder_mapping[].node_id`              | string   | 脚本回填 |                                                  |
+| `folder_mapping[].doc_url`              | string   | 脚本回填 |                                                  |
+
+## 4. 脚本结构
+
+```
+skills/dd-sync/
+├── SKILL.md
+├── DESIGN.md                    ← 本文件
+├── scripts/
+│   └── sync.py                  ← 主脚本
+└── references/
+    └── templates/
+        └── frontmatter.md
+```
+
+### 4.1 依赖
+
+- **Python** ≥ 3.9
+- **pyyaml**：解析 markdown 文件的 YAML frontmatter
+- **标准库**：`json`, `subprocess`, `argparse`, `pathlib`, `re`, `tempfile`, `datetime`
+
+### 4.2 模块划分
+
+```
+sync.py
+├── CLI 入口（argparse）
+│   ├── --config     配置文件路径（必填）
+│   ├── --dry-run    预览模式，不实际调用 dws
+│   └── --verbose    详细输出
+│
+├── Config 模块
+│   ├── load_config(path) → dict
+│   ├── save_config(config, path)  回填 node_id/doc_url
+│   └── validate_config(config)    启动时校验必填字段
+│
+├── DingTalk 模块（封装 dws 命令）
+│   ├── run_dws(args) → (returncode, stdout, stderr)
+│   ├── list_folder(parent_node_id=None, workspace_id=None) → [{name, nodeId, nodeType, docUrl}]
+│   ├── create_folder(name, parent_node_id=None, workspace_id=None) → {nodeId, docUrl}
+│   ├── ensure_folder(name, parent_node_id=None, workspace_id=None) → {nodeId, docUrl}
+│   │   └── 先 list_folder 查找同名 → 有则复用，无则 create_folder
+│   ├── create_doc(name, content_file, folder_node_id) → {nodeId, docUrl}
+│   ├── update_doc(node_id_or_url, content_file) → {success, nodeId}
+│   ├── update_doc_overwrite(node_id, content_file) → bool
+│   └── update_doc_append(node_id, content_file) → bool
+│
+├── Markdown 模块
+│   ├── parse_frontmatter(filepath) → (frontmatter_dict, body)
+│   │   └── 文件开头 "---\n...\n---" 之间用 pyyaml 解析
+│   ├── write_frontmatter(filepath, frontmatter)
+│   │   └── 只更新 dingding_link / dingding_updated，保留其他字段
+│   ├── get_doc_title(body, filepath) → str
+│   │   └── 取第一个 "# 标题"，不存在的用文件名
+│   └── collect_md_files(source_paths, base_dir) → [filepath]
+│       └── 递归遍历目录，收集 .md，排除 dd-sync-cfg.json
+│
+└── Sync 主流程
+    ├── phase2_prepare_folders(config)
+    │   ├── ensure root_folder 存在
+    │   ├── 遍历 folder_mapping，ensure 每个子文件夹
+    │   └── save_config 回填所有 node_id/doc_url
+    │
+    └── phase3_sync_documents(config)
+        ├── collect_md_files
+        ├── for each file:
+        │   ├── parse_frontmatter
+        │   ├── 正文为空 → skip + warn
+        │   ├── 有 dingding_link？→ update_doc → 更新 dingding_updated
+        │   └── 无 dingding_link？→ create_doc → 写入 dingding_link + dingding_updated
+        └── 输出同步结果报告
+```
+
+## 5. 关键实现细节
+
+### 5.1 YAML frontmatter 解析
+
+```python
+import yaml
+
+def parse_frontmatter(filepath: str) -> tuple[dict, str]:
+    """解析 markdown 文件的 YAML frontmatter。
+
+    Returns:
+        (frontmatter_dict, body_text)
+
+    文件必须以 "---" 开头才被视为有 frontmatter。
+    解析失败时 frontmatter_dict 为空 dict，body 为全文。
+    """
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    if not content.startswith('---'):
+        return {}, content
+
+    # 找到第二个 "---"
+    parts = content.split('---', 2)
+    if len(parts) < 3:
+        return {}, content
+
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        fm = {}
+
+    body = parts[2].lstrip('\n')
+    return fm, body
+```
+
+### 5.2 frontmatter 写回
+
+**原则**：只更新 `dingding_link` 和 `dingding_updated`，其他字段原样保留。
+
+```python
+def write_frontmatter(filepath: str, updates: dict):
+    """更新文件的 frontmatter。
+
+    updates 仅包含 dingding_link / dingding_updated。
+    如果文件没有 frontmatter，则在文件开头创建。
+    """
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    if content.startswith('---'):
+        # 替换已有 frontmatter 中的字段
+        parts = content.split('---', 2)
+        fm = yaml.safe_load(parts[1]) or {}
+        fm.update(updates)
+        new_fm = yaml.dump(fm, allow_unicode=True, default_flow_style=False).strip()
+        new_content = f"---\n{new_fm}\n---\n{parts[2].lstrip(chr(10))}"
+    else:
+        # 没有 frontmatter，创建
+        new_fm = yaml.dump(updates, allow_unicode=True, default_flow_style=False).strip()
+        new_content = f"---\n{new_fm}\n---\n{content}"
+
+    with open(filepath, 'w') as f:
+        f.write(new_content)
+```
+
+> ⚠️ 风险：`yaml.dump` 会重新格式化整个 frontmatter 块。如果用户有其他自定义字段且格式复杂，可能产生格式变化。**解决方案**：只做原地字符串替换，不重新 dump 整个 block。如果 `dingding_link` 行已存在则替换该行，否则在最后一个 frontmatter 字段后追加。
+
+### 5.3 dws 命令映射
+
+| 操作                   | dws 命令                                                                                              | 关键返回值                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| 列出知识库根目录       | `dws doc list --workspace <WS_ID> --format json`                                                      | `nodes[].{name, nodeId, nodeType, docUrl}` |
+| 列出文件夹内容         | `dws doc list --folder <node_id> --format json`                                                       | `nodes[].{name, nodeId, nodeType, docUrl}` |
+| 创建文件夹（知识库根） | `dws doc folder create --name "x" --workspace <WS_ID> --format json`                                  | `{nodeId, docUrl, name, folderId}`         |
+| 创建文件夹（子目录）   | `dws doc folder create --name "x" --folder <parent_node_id> --format json`                            | `{nodeId, docUrl, name, folderId}`         |
+| 创建文档               | `dws doc create --name "x" --content-file /tmp/x.md --folder <node_id> --format json`                 | `{nodeId, docUrl, name}`                   |
+| 更新文档               | `dws doc update --node <doc_id_or_url> --content-file /tmp/x.md --mode overwrite --format json --yes` | `{success, nodeId, mode}`                  |
+
+> **注意**：`--mode overwrite` 必须带 `--yes`，否则 dws 会返回错误 `--mode overwrite requires --yes`。
+
+### 5.4 文件夹准备（阶段二）
+
+```
+ensure_root_folder(config):
+    if root_folder.node_id 已有且有效 → skip
+    else:
+        → list_folder(workspace_id=KB_WS_ID) 在知识库根目录找同名
+        → 找到（nodeType == "folder" && name 匹配）→ 复用 nodeId, docUrl
+        → 未找到 → create_folder(name, workspace_id=KB_WS_ID)
+    → 回填 root_folder.node_id, root_folder.doc_url
+
+ensure_sub_folders(config):
+    for each mapping in folder_mapping:
+        dingtalk_name = mapping.dingtalk_folder_name or basename(mapping.local_dir)
+        if mapping.node_id 已有且有效 → skip
+        else:
+            → list_folder(parent_node_id=root_folder.node_id) 找同名
+            → 找到（nodeType == "folder" && name 匹配）→ 复用 nodeId, docUrl
+            → 未找到 → create_folder(dingtalk_name, parent_node_id=root_folder.node_id)
+        → 回填 mapping.node_id, mapping.doc_url
+
+save_config  将回填后的完整配置写回 dd-sync-cfg.json
+```
+
+### 5.5 文档同步（阶段三）
+
+```
+find_target_folder(filepath, config):
+    filepath 的相对目录匹配 folder_mapping[].local_dir
+    → 匹配到 → 返回对应 mapping 的 node_id
+    → 未匹配到 → 返回 root_folder.node_id
+
+get_doc_title(body, filepath):
+    match = 正则匹配 "^# (.+)$"（第一个一级标题）
+    → 有 → 返回标题文本
+    → 无 → 返回 os.path.splitext(os.path.basename(filepath))[0]
+
+sync_one_file(filepath, config):
+    fm, body = parse_frontmatter(filepath)
+    if not body.strip() → skip, warn
+
+    target_node_id = find_target_folder(filepath, config)
+    title = get_doc_title(body, filepath)
+
+    # 写 body 到临时文件
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+        f.write(body)
+        tmp_path = f.name
+
+    try:
+        if 'dingding_link' in fm:
+            # 更新
+            result = update_doc(fm['dingding_link'], tmp_path)
+            if result is None:
+                # 更新失败，检查是否因文档被删除
+                # 判断条件：error.message == "workspace node has been recycled"
+                result = create_doc(title, tmp_path, target_node_id)
+                fm['dingding_link'] = result['docUrl']
+            fm['dingding_updated'] = now_iso8601()
+        else:
+            # 新建
+            result = create_doc(title, tmp_path, target_node_id)
+            fm['dingding_link'] = result['docUrl']
+            fm['dingding_updated'] = now_iso8601()
+
+        write_frontmatter(filepath, fm)
+    finally:
+        os.unlink(tmp_path)
+```
+
+### 5.6 大文件分块上传
+
+> 背景：dws CLI 内置自动分片（>30000 字符触发），但遇到超大文件或网络不稳时可能失败（`CONTENT_TRUNCATED` 错误），因此脚本需自行实现分块上传保证可靠性。
+
+#### 策略
+
+| 内容大小     | 策略                               |
+| ------------ | ---------------------------------- |
+| ≤ 8,000 字符 | 单次上传，直接 `--content-file`    |
+| > 8,000 字符 | 分块上传：创建空文档 → 逐片 append |
+
+> dws API 限制单次 append 最大 **10,000 字符**，阈值设为 8,000 留 20% 余量。
+
+#### 分块算法
+
+按 markdown 标题边界切分，优先级从高到低：
+
+1. **H2 标题**（`## `）—— 首选，通常是最自然的章节边界
+2. **H3 标题**（`### `）—— 无 H2 时使用
+3. **空行** —— 无标题边界时按段落切分
+4. **硬切** —— 以上都不满足时，按字符数切分（保证不切断代码块和表格）
+
+每块大小控制在 6,000 ~ 8,000 字符之间。
+
+#### 创建文档时的分块流程
+
+```
+sync_one_file_large(filepath, config):
+    body = 文件正文（不含 frontmatter）
+    chunks = split_content(body, max_chunk_size=8000)
+    title = get_doc_title(body, filepath)
+    target_node_id = find_target_folder(filepath, config)
+
+    # 第一步：创建空文档
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md') as f:
+        f.write("")  # 空内容
+        f.flush()
+        result = create_doc(title, f.name, target_node_id)
+    node_id = result['nodeId']
+    doc_url = result['docUrl']
+
+    # 第二步：逐片 append
+    for i, chunk in enumerate(chunks):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md') as f:
+            f.write(chunk)
+            f.flush()
+            result = update_doc_append(node_id, f.name)
+        if not result:
+            # 重试一次
+            result = update_doc_append(node_id, f.name)
+        if not result:
+            raise SyncError(f"分块 {i+1}/{len(chunks)} 写入失败")
+
+    return doc_url
+```
+
+#### 更新文档时的分块流程
+
+```
+sync_one_file_update_large(filepath, fm, config):
+    body = 文件正文
+    chunks = split_content(body, max_chunk_size=8000)
+    doc_id = fm['dingding_link']
+
+    # 第一片：overwrite 覆盖旧内容
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md') as f:
+        f.write(chunks[0])
+        f.flush()
+        result = update_doc_overwrite(doc_id, f.name)
+    if not result:
+        raise SyncError("首片 overwrite 失败")
+
+    # 后续片：append 追加
+    for i, chunk in enumerate(chunks[1:], start=2):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md') as f:
+            f.write(chunk)
+            f.flush()
+            result = update_doc_append(doc_id, f.name)
+        if not result:
+            result = update_doc_append(doc_id, f.name)  # 重试一次
+        if not result:
+            raise SyncError(f"分块 {i}/{len(chunks)} 写入失败")
+```
+
+#### 新增 DingTalk 模块函数
+
+```
+update_doc_append(node_id, content_file) → bool:
+    dws doc update --node <node_id> --content-file <content_file>
+                   --mode append --content-format markdown --format json --yes
+
+update_doc_overwrite(node_id, content_file) → bool:
+    dws doc update --node <node_id> --content-file <content_file>
+                   --mode overwrite --content-format markdown --format json --yes
+```
+
+#### 分块函数伪代码
+
+```python
+def split_content(content: str, max_chunk_size: int = 8000) -> list[str]:
+    """按 markdown 标题边界分块，保证每块不超过 max_chunk_size。"""
+    chunks = []
+    current = ""
+
+    # 用 H2 标题作为首选切分点
+    sections = re.split(r'(?=^## )', content, flags=re.MULTILINE)
+
+    for section in sections:
+        if len(current) + len(section) > max_chunk_size and current:
+            chunks.append(current)
+            current = section
+        else:
+            current += section
+
+    if current:
+        # 最后一块如果还是太大，用 H3 再切
+        if len(current) > max_chunk_size:
+            sub_sections = re.split(r'(?=^### )', current, flags=re.MULTILINE)
+            sub_current = ""
+            for sub in sub_sections:
+                if len(sub_current) + len(sub) > max_chunk_size and sub_current:
+                    chunks.append(sub_current)
+                    sub_current = sub
+                else:
+                    sub_current += sub
+            if sub_current:
+                chunks.append(sub_current)
+        else:
+            chunks.append(current)
+
+    return chunks
+```
+
+### 5.7 时间格式
+
+使用 ISO 8601 带时区：`2026-06-11T10:30:00+08:00`
+
+```python
+from datetime import datetime, timezone, timedelta
+
+def now_iso8601():
+    tz = timezone(timedelta(hours=8))  # CST
+    return datetime.now(tz).strftime('%Y-%m-%dT%H:%M:%S%z')
+    # 格式：2026-06-11T10:30:00+0800
+    # 转为标准格式需插入冒号
+```
+
+## 6. 错误处理
+
+| 场景                           | 处理策略                                                               |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| dws 命令未安装/未登录          | 启动时 `dws --version` 检测，失败则提示安装/登录                       |
+| 配置文件 JSON 格式错误         | 启动时校验，输出具体错误行                                             |
+| 配置文件必填字段缺失           | 启动时校验，列出缺失字段                                               |
+| `source_paths` 中路径不存在    | 跳过并 warn，继续处理其他路径                                          |
+| 单个文档创建失败（网络/权限）  | 记录错误，继续处理下一个文档                                           |
+| 分块上传某一片失败             | 重试一次，仍失败则记录错误并跳过该文档                                 |
+| 更新失败且原因是「文档已删除」 | `error.message == "workspace node has been recycled"` 时降级为「新建」 |
+| 更新失败且原因是其他错误       | 记录错误，跳过该文档                                                   |
+| 正文为空的文档                 | 跳过并 warn                                                            |
+| frontmatter YAML 解析失败      | 视为无 frontmatter，走「新建」路径                                     |
+
+## 7. 输出格式
+
+### 7.1 正常输出
+
+```
+========================================
+dd-sync v1
+========================================
+
+📁 阶段二：准备钉钉文件夹
+  ✅ root_folder "项目文档" — 已存在，复用 (node_id: abc123)
+  ✅ docs/api → "API文档" — 已存在，复用 (node_id: def456)
+  ✅ docs/guide → "guide" — 新建 (node_id: ghi789)
+
+📄 阶段三：同步文档 (共 5 个文件)
+  [CREATE] docs/api/auth.md → "认证接口" (https://alidocs.dingtalk.com/...)
+  [UPDATE] docs/api/user.md → "用户接口" (已更新, 2026-06-11T10:30:00+08:00)
+  [CREATE] docs/guide/start.md → "快速开始" (https://alidocs.dingtalk.com/...)
+  [SKIP]   docs/guide/empty.md — 正文为空
+  [CREATE] notes/readme.md → "说明" (https://alidocs.dingtalk.com/...)
+
+========================================
+结果: ✅ 4 成功   ⚠️ 1 跳过   ❌ 0 失败
+========================================
+```
+
+### 7.2 错误输出
+
+```
+========================================
+dd-sync v1
+========================================
+
+📁 阶段二：准备钉钉文件夹
+  ...
+
+📄 阶段三：同步文档 (共 5 个文件)
+  [CREATE] docs/api/auth.md → ✅ (https://...)
+  [CREATE] docs/api/broken.md → ❌ 创建失败: 权限不足
+  [UPDATE] docs/guide/start.md → ✅ 已更新
+  [UPDATE] docs/guide/deleted.md → ⚠️ 文档已删除，降级为新建 → ✅ (https://...)
+
+========================================
+结果: ✅ 3 成功   ⚠️ 1 降级   ❌ 1 失败
+失败详情:
+  - docs/api/broken.md: 创建失败: 权限不足
+========================================
+```
+
+## 8. dry-run 模式
+
+`--dry-run` 下不实际调用 `dws` 命令，仅输出预览：
+
+```
+========================================
+dd-sync v1  [DRY RUN]
+========================================
+
+📁 阶段二：准备钉钉文件夹（模拟）
+  ✅ root_folder "项目文档" — 将查找或创建
+  ✅ docs/api → "API文档" — 将查找或创建
+
+📄 阶段三：同步文档（模拟）
+  [CREATE] docs/api/auth.md → "认证接口" → 目标文件夹: API文档
+  [UPDATE] docs/api/user.md → "用户接口" → 已有 dingding_link
+
+========================================
+以上为预览，未执行实际操作。
+去掉 --dry-run 参数以执行同步。
+========================================
+```
+
+## 9. SKILL.md 改动要点
+
+1. 去掉对 `dd-sync-cfg.md` 的所有引用
+2. 阶段一产出改为 `dd-sync-cfg.json`
+3. 阶段二和阶段三合并为：「运行脚本 `python scripts/sync.py --config dd-sync-cfg.json`」
+4. 保留注意事项和 frontmatter 说明（供 AI 理解流程）
+
+---
+
+## 附录 A：dws 命令实测响应
+
+> 测试环境：dws v1.0.35，测试知识库 `<WORKSPACE_ID>`。
+> 以下为各命令的原始 JSON 返回，供实现时参考字段名和数据结构。
+
+### A.1 `dws doc list --workspace`（列出知识库根目录）
+
+```bash
+dws doc list --workspace <WORKSPACE_ID> --limit 5 --format json
+```
+
+```json
+{
+  "hasMore": false,
+  "nodes": [
+    {
+      "contentType": null,
+      "createTime": 1781155342000,
+      "docUrl": "https://alidocs.dingtalk.com/i/nodes/<NODE_ID>?utm_scene=team_space",
+      "extension": null,
+      "hasChildren": true,
+      "name": "_dd_sync_test_folder",
+      "nodeId": "<NODE_ID>",
+      "nodeType": "folder",
+      "updateTime": 1781155342000,
+      "workspaceId": "<WORKSPACE_ID>"
+    }
+  ],
+  "success": true
+}
+```
+
+> 关键字段：`nodes[].name`、`nodes[].nodeId`、`nodes[].nodeType`（`"folder"` / `"file"`）、`nodes[].docUrl`、`nodes[].hasChildren`
+
+### A.2 `dws doc folder create`（创建文件夹）
+
+```bash
+dws doc folder create --name "_dd_sync_test_folder" --workspace <WORKSPACE_ID> --format json
+```
+
+```json
+{
+  "createTime": 1781155342000,
+  "docUrl": "https://alidocs.dingtalk.com/i/nodes/<NODE_ID>?utm_scene=team_space",
+  "folderId": "<FOLDER_ID>",
+  "message": "Folder created successfully.",
+  "name": "_dd_sync_test_folder",
+  "nodeId": "<NODE_ID>",
+  "success": true
+}
+```
+
+> 关键字段：`nodeId`、`docUrl`、`folderId`、`name`
+
+### A.3 `dws doc create`（创建文档）
+
+```bash
+echo "# 测试标题
+
+## 第一章
+
+这是测试内容。" > /tmp/_dd_sync_test.md
+dws doc create --name "测试文档" --content-file /tmp/_dd_sync_test.md \
+  --folder <NODE_ID> --format json
+```
+
+```json
+{
+  "createTime": 1781155350000,
+  "docUrl": "https://alidocs.dingtalk.com/i/nodes/<DOC_NODE_ID>",
+  "folderId": "<NODE_ID>",
+  "message": "文档创建成功，初始内容已写入。",
+  "name": "测试文档",
+  "nodeId": "<DOC_NODE_ID>",
+  "success": true
+}
+```
+
+> 关键字段：`nodeId`、`docUrl`、`name`、`folderId`
+> 注：`docUrl` 不含 `?utm_scene=team_space` 查询参数，与 `folder create` 的 `docUrl` 略有不同。
+
+### A.4 `dws doc update`（覆盖更新文档）
+
+```bash
+echo "# 测试标题（已更新）
+
+## 第一章
+
+内容已更新。" > /tmp/_dd_sync_test.md
+dws doc update --node <DOC_NODE_ID> \
+  --content-file /tmp/_dd_sync_test.md --mode overwrite --format json --yes
+```
+
+```json
+{
+  "message": "文档内容已成功覆盖，所有原有内容已替换为新内容。",
+  "mode": "overwrite",
+  "nodeId": "<DOC_NODE_ID>",
+  "success": true
+}
+```
+
+> 关键字段：`success`、`nodeId`、`mode`
+> ⚠️ 必须带 `--yes`，否则报错：`--mode overwrite requires --yes unless --dry-run is set`
+
+### A.5 `dws doc list --folder`（列出文件夹内容）
+
+```bash
+dws doc list --folder <NODE_ID> --format json
+```
+
+```json
+{
+  "hasMore": false,
+  "nodes": [
+    {
+      "contentType": "ALIDOC",
+      "createTime": 1781155350000,
+      "docUrl": "https://alidocs.dingtalk.com/i/nodes/<DOC_NODE_ID>?utm_scene=team_space",
+      "extension": "adoc",
+      "hasChildren": false,
+      "name": "测试文档",
+      "nodeId": "<DOC_NODE_ID>",
+      "nodeType": "file",
+      "updateTime": 1781155350000,
+      "workspaceId": "<WORKSPACE_ID>"
+    }
+  ],
+  "success": true
+}
+```
+
+> 文件节点的 `nodeType` 为 `"file"`，文件夹为 `"folder"`。
+
+### A.6 `dws doc update`（文档被删除后更新）
+
+```bash
+# 先删除文档
+dws doc delete --node <DOC_NODE_ID> --yes --format json
+# 再尝试更新
+dws doc update --node <DOC_NODE_ID> \
+  --content-file /tmp/_dd_sync_test.md --mode overwrite --format json --yes
+```
+
+```json
+{
+  "error": {
+    "category": "api",
+    "code": 1,
+    "hint": "The API returned a business-level error. Check required parameters and values.",
+    "message": "workspace node has been recycled",
+    "operation": "tools/call",
+    "reason": "business_error",
+    "server_error_code": "invalidParameter.item.notFound",
+    "server_key": "doc",
+    "trace_id": "<TRACE_ID>"
+  }
+}
+```
+
+> **降级判断条件**：`"error" in response and response["error"]["message"] == "workspace node has been recycled"`
+
+### A.7 `dws doc delete`（删除文档/文件夹）
+
+```bash
+dws doc delete --node <DOC_NODE_ID> --yes --format json
+```
+
+```json
+{
+  "message": "节点已成功移入回收站，30 天内可从回收站恢复。nodeId: <DOC_NODE_ID>",
+  "success": true
+}
+```
+
+> 删除后节点进入回收站，30 天内可恢复。脚本不需要 `delete` 命令，此处仅作参考。
+
+## 测试
+
+集成测试套件位于 `tests/test_sync.py`，分为两组，各使用独立的 `dd-sync-cfg.json`：
+
+**Group A：不上传根文件夹**（`root_folder.name` 为空，`folder_mapping: []`，文档直接上传到知识库根目录）
+
+每组先以空配置运行（触发创建），再以预填配置运行（触发更新/复用）。
+
+| 测试         | 说明                                          |
+| ------------ | --------------------------------------------- |
+| Dry-run 预览 | 不实际调用 dws，验证操作计划                  |
+| 首次同步     | 新建文档到知识库根目录，验证 frontmatter 写入 |
+| 空文档跳过   | 空 `.md` 文件正确跳过                         |
+| 文档更新     | 修改后重新同步走 [UPDATE] 路径                |
+| 文件夹复用   | 无 root_folder，验证直接使用 workspace 根目录 |
+| 回归验证     | 全部文件无失败                                |
+
+**Group B：上传根文件夹**（`root_folder.name` 有值，`folder_mapping` 含子目录，文档上传到指定文件夹下）
+
+| 测试           | 说明                                              |
+| -------------- | ------------------------------------------------- |
+| Dry-run 预览   | 不实际调用 dws，验证子目录映射和操作计划          |
+| 首次同步       | 新建文档到子目录，验证大文件分块创建、config 回填 |
+| 空文档跳过     | 空 `.md` 文件正确跳过                             |
+| 大文件分块创建 | >8,000 字符文件验证分片上传结果                   |
+| 文档更新       | 修改后重新同步走 [UPDATE] 路径                    |
+| 文件夹复用     | node_id 已缓存时跳过创建                          |
+| 大文件分块更新 | 分块文件修改后重新覆盖                            |
+| 回归验证       | 全部文件无失败                                    |
+
+```bash
+# 使用默认知识库运行
+python tests/test_sync.py
+
+# 指定知识库
+WORKSPACE_ID=YOUR_ID python tests/test_sync.py
+
+# 测试后保留数据（手动检查）
+python tests/test_sync.py --keep
+```

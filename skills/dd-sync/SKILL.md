@@ -17,11 +17,19 @@ description: >-
 
 ## 技能概述
 
-将本地目录中的 Markdown 文档批量同步到钉钉知识库，支持新建和更新已有文档。通过 YAML frontmatter 跟踪每个文档的同步状态。
+将本地目录中的 Markdown 文档批量同步到钉钉知识库，支持新建和增量更新。通过 YAML frontmatter 跟踪每个文档的同步状态。
+
+**同步分为三个阶段：**
+
+| 阶段                   | 负责方                          | 说明                               |
+| ---------------------- | ------------------------------- | ---------------------------------- |
+| 阶段一：确认同步参数   | AI 对话式收集                   | 产出 `dd-sync-cfg.json` 配置文件   |
+| 阶段二：准备钉钉文件夹 | Python 脚本 (`scripts/sync.py`) | 根据配置创建/复用文件夹            |
+| 阶段三：执行文档同步   | Python 脚本 (`scripts/sync.py`) | 遍历 markdown 文件，新建或更新文档 |
 
 ---
 
-## 阶段一：确认同步参数
+## 阶段一：确认同步参数（由 AI 执行）
 
 ### 1.1 参数澄清循环
 
@@ -52,7 +60,7 @@ description: >-
 
 1. 判断用户输入的类型：
    - 如果是名称（如 `智慧校园项目实施知识库`）→ 调用 `dws wiki list`，在返回的知识库列表中按名称匹配，找到对应的知识库 ID
-   - 如果是 ID（如 `YRBGvnNB0ZoWAGDA`，可从知识库首页的URL上获得）→ 直接使用该 ID，调用 `dws wiki list` 验证其有效性，获得知识库的名字
+   - 如果是 ID（如 `YOUR_WORKSPACE_ID`，可从知识库首页的URL上获得）→ 直接使用该 ID，调用 `dws wiki list` 验证其有效性，获得知识库的名字
 2. 内部统一使用知识库 ID 进行后续操作
 
 - ✅ 找到/验证通过 → 通过，记录 `KNOWLEDGE_BASE`（名称）和 `KNOWLEDGE_BASE_ID`（ID）
@@ -82,13 +90,46 @@ description: >-
    - **否** → 钉钉文件夹名称直接使用本地目录名
 3. 如果 【本地 Markdown 源】 中的路径均为单个 `.md` 文件（不包含任何目录），跳过此问题
 
-确定的映射关系将记录到同步配置文件的 【本地子目录 → 钉钉文件夹的映射表】的表格中（此时仅填充本地目录和钉钉文件夹名称，`node_id` 和 `doc_url` 在阶段二创建文件夹后回填）。
+确定的映射关系将记录到同步配置文件的 `folder_mapping` 数组中（此时仅填充 `local_dir` 和 `dingtalk_folder_name`，`node_id` 和 `doc_url` 由脚本在阶段二回填）。
 
-### 1.2 创建同步配置文件
+### 1.2 创建同步配置文件（JSON）
 
-全部参数（Q1~Q4）确认完毕后，**在项目根目录创建同步配置文件 `dd-sync-cfg.md`** 作为阶段一的最终产出，模板见 references/templates/dd-sync-cfg.md
+全部参数（Q1~Q4）确认完毕后，**创建同步配置文件 `dd-sync-cfg.json`**（JSON 格式），作为阶段一的最终产出。
 
-**每次同步时**，先检查 `dd-sync-cfg.md` 是否存在：
+**JSON 配置模板：**
+
+```json
+{
+  "version": "1",
+  "source_paths": ["docs/", "notes/api-guide.md"],
+  "knowledge_base": {
+    "name": "智慧校园项目实施知识库",
+    "workspace_id": "YOUR_WORKSPACE_ID"
+  },
+  "root_folder": {
+    "name": "项目文档",
+    "node_id": "YOUR_NODE_ID",
+    "doc_url": "https://...",
+    "comment": "node_id/doc_url 为空表示待脚本创建"
+  },
+  "folder_mapping": [
+    {
+      "local_dir": "docs/api",
+      "dingtalk_folder_name": "API文档",
+      "node_id": "",
+      "doc_url": "",
+      "comment": "node_id/doc_url 为空表示待脚本创建"
+    }
+  ]
+}
+```
+
+**字段说明：**
+
+- `root_folder.node_id` / `root_folder.doc_url`：Q3 已知时填入，否则留空让脚本创建
+- `folder_mapping[].node_id` / `folder_mapping[].doc_url`：始终留空，由脚本创建后回填
+
+**每次同步时**，先检查 `dd-sync-cfg.json` 是否存在：
 
 - 存在 → 读取已有参数，向用户确认是否沿用。用户可以选择：
   - 全部沿用 → 直接进入阶段二
@@ -99,67 +140,57 @@ description: >-
 
 ---
 
-## 阶段二：准备钉钉文件夹
+## 阶段二 + 阶段三：执行同步脚本（Python 脚本）
 
-> 使用 `dws skill` 进行文件夹创建工作
-> 在开始同步文档之前，需要先在钉钉知识库中准备好对应的文件夹结构。
+阶段一的配置文件 `dd-sync-cfg.json` 就绪后，AI 执行以下命令：
 
-如果阶段一Q3用户明确要创建【目标钉钉知识库文件夹】，那么先创建这个文件夹，然后把 `node_id` 和 `doc_url`，回填到 【同步配置文件】 中。
+```bash
+cd <项目根目录>
+python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json
+```
 
-根据阶段一【同步配置文件】中的【本地子目录 → 钉钉文件夹的映射表】确定的映射关系，在【目标钉钉知识库文件夹】下逐一创建子文件夹。创建前先查找同名文件夹是否已存在：已存在则直接复用已有的 `node_id` 和 `doc_url`；不存在则新建。将最终获得的 `node_id` 和 `doc_url` 回填到【同步配置文件】中。
+**可选参数：**
 
-> 下次同步时，先检查 【本地子目录 → 钉钉文件夹的映射表】 中已有的文件夹是否仍然存在，不存在则重新创建。
+| 参数        | 说明                                           |
+| ----------- | ---------------------------------------------- |
+| `--dry-run` | 预览模式，只打印将要执行的操作，不实际调用 dws |
+| `--verbose` | 输出更详细的日志                               |
 
----
+**脚本自动完成：**
 
-## 阶段三：执行同步
+1. **校验配置**：JSON 格式校验、必填字段检查
+2. **阶段二 — 准备文件夹**：检查 root_folder 和 folder_mapping 中的 `node_id` 是否为空，为空则在钉钉上创建/复用文件夹，回填 `node_id` 和 `doc_url` 到配置文件
+3. **阶段三 — 同步文档**：
+   - 遍历 `source_paths`，收集所有 `.md` 文件（排除配置文件自身）
+   - 跳过正文为空的文档
+   - 解析 frontmatter：有 `dingding_link` → 更新；无 → 新建
+   - **大文件自动分块**：内容 > 50KB 时自动按 H2/H3 标题边界分片上传
+   - 更新失败且文档已被删除时，自动降级为新建
+   - 每完成一个文档，更新 frontmatter 中的 `dingding_link` / `dingding_updated`
 
-### 前置：收集文档并判定同步策略
+**输出示例：**
 
-1. 遍历 【本地 Markdown 源】 中的每个路径，收集所有 `.md` 文件。
-   - **排除** `dd-sync-cfg.md`（同步配置文件自身不参与同步）
-2. 对收集到的每个 `.md` 文件，检查正文（不含 frontmatter）是否为空：若为空，跳过该文档并提示用户。
-3. 检查每个 `.md` 文件的 YAML frontmatter，判断同步策略：
+```
+========================================
+dd-sync v1  [DRY RUN]
+========================================
 
-| frontmatter 中有 `dingding_link`？ | 策略                                               |
-| ---------------------------------- | -------------------------------------------------- |
-| 否                                 | → [3.1 创建新的钉钉文档](#31-创建新的钉钉文档)     |
-| 是                                 | → [3.2 更新已有的钉钉文档](#32-更新已有的钉钉文档) |
+📁 阶段二：准备钉钉文件夹
+  ✅ root_folder "项目文档" — 已有 node_id，跳过
+  ✅ docs/api → "API文档" (nodeId: <NODE_ID_1>)
+  ✅ docs/ui → "UI设计" (nodeId: <NODE_ID_1>)
 
-### 3.1 创建新的钉钉文档
+📄 阶段三：同步文档 (共 5 个文件)
+  [CREATE] docs/api/auth.md → "认证接口" (https://...)
+  [UPDATE] docs/api/user.md → "用户接口" (已更新)
+  [UPDATE] docs/ui/home.md → "首页设计" (已更新)
+  [SKIP] docs/empty.md — 正文为空
+  [CREATE-chunk] docs/guide.md → "开发指南" (https://..., 3 片)
 
-> 每创建一个钉钉文档，就给原文档添加 frontmatter
-
-1. 根据阶段二生成的【本地子目录 → 钉钉文件夹的映射表】，查找文档所属本地目录对应的钉钉 `node_id`。
-2. 若文档不在任何映射目录内（如 【本地 Markdown 源】 中直接指定的单个文件），则直接放在 【目标钉钉知识库文件夹】 下。
-3. 取源文档的一级标题（`# 标题`）作为钉钉文档名称；若没有一级标题，则使用源文档的文件名（不含 `.md` 扩展名）。
-   - **标题冲突处理**：若目标文件夹下已存在同名文档，则追加文档所属的本地目录名作为后缀（格式：`标题 (目录名)`）以区分。
-4. 调用 `dws doc create`，在目标文件夹（通过 `node_id` 指定）下创建文档，内容为源文档的正文（不含 frontmatter）。若创建失败（如网络错误、权限不足等），将错误信息反馈给用户，跳过该文档。
-5. 获取返回的钉钉文档链接。
-6. 在源文档的 frontmatter 中仅写入/更新 `dingding_link` 和 `dingding_updated` 两个字段（见 references/templates/frontmatter.md），源文档原本的其他 frontmatter 字段保持不变。若源文档原本没有 frontmatter，则在文件开头创建：
-   ```yaml
-   ---
-   dingding_link: "<返回的链接>"
-   dingding_updated: "<当前 ISO 8601 时间>"
-   ---
-   ```
-
-### 3.2 更新已有的钉钉文档
-
-> 每更新一个钉钉文档，就更新原文档的 frontmatter
-
-1. 读取 frontmatter 中的 `dingding_link`。
-2. 使用 `dws skill` 更新文档，用当前源文档正文覆盖钉钉上的文档。
-3. 若更新失败且原因是钉钉上该文档已被手动删除，则降级为 [3.1 创建新的钉钉文档](#31-创建新的钉钉文档) 流程（创建后更新 frontmatter 中的 `dingding_link`）；若为其他错误（如网络错误、权限不足等），将错误信息反馈给用户，跳过该文档。
-4. 更新成功后，更新 frontmatter 中的 `dingding_updated` 为当前时间，源文档原本的其他 frontmatter 字段保持不变：
-   ```yaml
-   dingding_updated: "<当前 ISO 8601 时间>"
-   ```
-
-### 3.3 验证
-
-- 确认所有文档均已处理，frontmatter 中的 `dingding_link` 和 `dingding_updated` 写入正确。
-- 检查钉钉知识库中对应文件夹下的文档数量和标题。
+========================================
+结果: ✅ 4 成功   ⚠️ 0 降级   ⏭️ 1 跳过   ❌ 0 失败
+========================================
+```
 
 ---
 
@@ -169,6 +200,8 @@ description: >-
 2. **指定同步配置文件**：用户可以指定【同步配置文件】，一个项目下也可以有多个【同步配置文件】
 3. **frontmatter 保留**：编辑源文档时保留已有的 `dingding_link` / `dingding_updated` 字段，避免重复创建。
 4. **时间格式**：使用 ISO 8601 带时区，如 `2026-06-09T14:33:59+08:00`。
+5. **大文件处理**：脚本内置分块上传（>50KB 自动触发），按 H2 → H3 → 段落边界切分，单次失败自动重试。
+6. **节点 ID 缓存**：配置文件中的 `node_id` / `doc_url` 会在首次运行后持久化，后续运行复用，避免重复查找/创建。
 
 ---
 
@@ -181,28 +214,29 @@ description: >-
 ```
 帮我把 docs/ 目录下的文档同步到钉钉知识库
 把这些 markdown 文件批量推到钉钉知识库里
-用配置文件 dd-sync-cfg.md 同步文档到钉钉
+用配置文件 dd-sync-cfg.json 同步文档到钉钉
 ```
 
 **Slash command 触发：**
 
 ```
 /dd-sync 把 /path/to/dir 下的文档同步到钉钉知识库
-/dd-sync 按照配置文件 /path/to/dd-sync-cfg.md，把文档同步到钉钉知识库
+/dd-sync 按照配置文件 /path/to/dd-sync-cfg.json，把文档同步到钉钉知识库
 ```
 
 AI 会按以下三阶段执行：
 
-**阶段一：确认同步参数**
+**阶段一：确认同步参数（AI 对话式收集）**
 
 1. 参数澄清循环 —— 逐一询问并验证：本地路径、知识库、目标文件夹、文件夹映射关系
-2. 创建同步配置文件 —— 产出 `dd-sync-cfg.md`，下次可复用
+2. 创建同步配置文件 —— 产出 `dd-sync-cfg.json`（JSON 格式，机器可读），下次可复用
 
-**阶段二：钉钉文件夹准备**
+**阶段二 & 阶段三：Python 脚本自动化**
 
-- 根据配置文件中的文件夹映射关系，使用 dws skill 创建文件夹，记录 node_id 和 doc_url
+```bash
+python scripts/sync.py --config dd-sync-cfg.json
+```
 
-**阶段三：执行同步**
+脚本自动完成文件夹准备、文档收集、新建/更新、大文件分块、frontmatter 回写等机械操作，节省 AI token 消耗并提高执行速度。
 
-- 创建新的钉钉文档（首次同步）
-- 更新已有的钉钉文档（已同步过的文档，通过 frontmatter 中的 `dingding_link` 识别）
+---
