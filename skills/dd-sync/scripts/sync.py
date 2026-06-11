@@ -391,6 +391,48 @@ def collect_md_files(source_paths: list[str], base_dir: str,
 # 分块模块
 # ────────────────────────────────────────────────────────────
 
+
+def _mask_headings_in_code_blocks(content: str, heading_prefix: str) -> tuple[str, dict]:
+    """将代码块中以 heading_prefix 开头的行替换为占位符，避免被误切。
+
+    Args:
+        content: 原始 markdown 内容
+        heading_prefix: 要保护的标题前缀，如 "## " 或 "### "
+
+    Returns:
+        (masked_content, placeholder_map)
+    """
+    lines = content.split('\n')
+    result_lines = []
+    in_code_block = False
+    placeholder_idx = 0
+    placeholders: dict[str, str] = {}
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_code_block = not in_code_block
+            result_lines.append(line)
+            continue
+
+        if in_code_block and line.startswith(heading_prefix):
+            placeholder = f'__HEADING_PLACEHOLDER_{placeholder_idx}__'
+            placeholders[placeholder] = line
+            result_lines.append(placeholder)
+            placeholder_idx += 1
+        else:
+            result_lines.append(line)
+
+    return '\n'.join(result_lines), placeholders
+
+
+def _unmask_headings(content: str, placeholders: dict[str, str]) -> str:
+    """还原占位符为原始代码块行。"""
+    for placeholder, original in placeholders.items():
+        content = content.replace(placeholder, original)
+    return content
+
+
 def split_content(content: str, max_chunk_size: int = MAX_CHUNK_SIZE) -> list[str]:
     """按 markdown 标题边界分块。
 
@@ -400,20 +442,33 @@ def split_content(content: str, max_chunk_size: int = MAX_CHUNK_SIZE) -> list[st
     if len(content) <= max_chunk_size:
         return [content]
 
+    # 保护代码块中的 H2 标题不被误切
+    masked, placeholders = _mask_headings_in_code_blocks(content, '## ')
+
     chunks = []
     # 用 H2 作为首选切分点
-    sections = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+    sections = re.split(r"(?=^## )", masked, flags=re.MULTILINE)
     current = ""
 
     for section in sections:
-        if len(current) + len(section) > max_chunk_size and current:
-            chunks.append(current)
-            current = section
+        if len(current) + len(section) > max_chunk_size:
+            if current:
+                chunks.append(current)
+            # section 自身可能也超大，立即拆分
+            if len(section) > max_chunk_size:
+                chunks.extend(_split_oversized(section, max_chunk_size))
+                current = ""
+            else:
+                current = section
         else:
             current += section
 
     if current:
         chunks.extend(_split_oversized(current, max_chunk_size))
+
+    # 还原代码块中的占位符
+    if placeholders:
+        chunks = [_unmask_headings(c, placeholders) for c in chunks]
 
     return chunks
 
@@ -423,24 +478,40 @@ def _split_oversized(text: str, max_size: int) -> list[str]:
     if len(text) <= max_size:
         return [text]
 
+    # 保护代码块中的 H3 标题不被误切
+    masked, placeholders = _mask_headings_in_code_blocks(text, '### ')
+
     result = []
     # H3 切分
-    sub_sections = re.split(r"(?=^### )", text, flags=re.MULTILINE)
+    sub_sections = re.split(r"(?=^### )", masked, flags=re.MULTILINE)
     current = ""
     for sub in sub_sections:
-        if len(current) + len(sub) > max_size and current:
-            result.extend(_split_by_paragraph(current, max_size))
-            current = sub
+        if len(current) + len(sub) > max_size:
+            if current:
+                result.extend(_split_by_paragraph(current, max_size))
+            # sub 自身可能也超大，立即拆分
+            if len(sub) > max_size:
+                result.extend(_split_by_paragraph(sub, max_size))
+                current = ""
+            else:
+                current = sub
         else:
             current += sub
     if current:
         result.extend(_split_by_paragraph(current, max_size))
 
+    # 还原代码块中的占位符
+    if placeholders:
+        result = [_unmask_headings(r, placeholders) for r in result]
+
     return result
 
 
 def _split_by_paragraph(text: str, max_size: int) -> list[str]:
-    """按空行（段落边界）切分，避免切断代码块和表格。"""
+    """按空行（段落边界）切分，避免切断代码块和表格。
+
+    单段落仍超大时按行切分，单行仍超大时硬切（字符级）。
+    """
     if len(text) <= max_size:
         return [text]
 
@@ -459,12 +530,44 @@ def _split_by_paragraph(text: str, max_size: int) -> list[str]:
             continue
 
         if len(current) + len(para) > max_size and current.strip():
-            result.append(current)
+            result.extend(_hard_split(current, max_size))
             current = para
         else:
             current += para
 
     if current.strip():
+        result.extend(_hard_split(current, max_size))
+
+    return result
+
+
+def _hard_split(text: str, max_size: int) -> list[str]:
+    """最后手段：按行切分，单行仍超大则字符级硬切。"""
+    if len(text) <= max_size:
+        return [text]
+
+    result = []
+    lines = text.split('\n')
+    current = ""
+
+    for line in lines:
+        # 单行超大：字符级硬切
+        if len(line) > max_size:
+            if current:
+                result.append(current)
+                current = ""
+            for i in range(0, len(line), max_size):
+                result.append(line[i:i + max_size])
+            continue
+
+        candidate = current + '\n' + line if current else line
+        if len(candidate) > max_size:
+            result.append(current)
+            current = line
+        else:
+            current = candidate
+
+    if current:
         result.append(current)
 
     return result

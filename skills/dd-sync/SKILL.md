@@ -73,7 +73,10 @@ description: >-
 
 向用户提问，获取 【目标钉钉知识库文件夹】信息（可以是文件夹名字或文件夹 node_id）
 
-**确认方法**：使用 `dws skill` 的文件夹相关功能，在目标知识库中查找该文件夹是否存在。
+**确认方法**：
+
+- 用户给的是文件夹名字时，使用 `dws doc search --query '<文件夹名字>' --workspace-ids <KNOWLEDGE_BASE_ID>` ，在目标知识库中查找该文件夹是否存在。
+- 用户给的是文件夹ID是，使用 `dws skill`，在目标知识库中查找该文件夹是否存在。
 
 - ✅ 找到/验证通过 → 通过，记录 【目标钉钉知识库文件夹】（名称）、 `ROOT_FOLDER_NODE_ID`（node_id）、`ROOT_FOLDER_DOC_URL`（doc_url）
 - ❌ 文件夹不存在 → 向用户确认是否需要创建，或是否使用了错误的文件夹名
