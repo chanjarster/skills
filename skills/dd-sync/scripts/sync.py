@@ -320,12 +320,16 @@ def write_frontmatter(filepath: str, dingding_link: str = None,
     else:
         # 原地替换，保留其他字段不变
         parts = content.split("---", 2)
-        fm_block = parts[1]
+        fm_block = parts[1].strip()
         new_fm_lines = []
         updated_keys = set()
 
         for line in fm_block.split("\n"):
             stripped = line.strip()
+            if not stripped:
+                # 保留 frontmatter 字段间的有意空行
+                new_fm_lines.append("")
+                continue
             if ":" in stripped and not stripped.startswith("#"):
                 key = stripped.split(":", 1)[0].strip()
                 if key in updates:
