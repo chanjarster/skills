@@ -106,7 +106,8 @@ sync.py
 ├── CLI 入口（argparse）
 │   ├── --config     配置文件路径（必填）
 │   ├── --dry-run    预览模式，不实际调用 dws
-│   └── --verbose    详细输出
+│   ├── --verbose    详细输出
+│   └── --file       指定单个文件同步，跳过其余文件（用于出错重试）
 │
 ├── Config 模块
 │   ├── load_config(path) → dict
@@ -141,8 +142,9 @@ sync.py
     │   ├── 遍历 folder_mapping，ensure 每个子文件夹
     │   └── save_config 回填子文件夹 node_id/doc_url
     │
-    └── phase3_sync_documents(config)
+    └── phase3_sync_documents(config, single_file=None)
         ├── collect_md_files
+        ├── 若 single_file 指定，过滤只保留该文件（相对/绝对路径均可）
         ├── for each file:
         │   ├── parse_frontmatter
         │   ├── 正文为空 → skip + warn
@@ -514,7 +516,7 @@ dd-sync v1
 
 ## 8. dry-run 模式
 
-`--dry-run` 下不实际调用 `dws` 命令，仅输出预览：
+`--dry-run` 下不实际调用 `dws` 命令，仅输出预览。可与 `--file` 组合使用，预览单个文件的同步计划：
 
 ```
 ========================================

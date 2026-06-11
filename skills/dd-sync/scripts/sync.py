@@ -860,15 +860,35 @@ def _chunked_update(doc_link: str, chunks: list[str]):
 
 
 def phase3_sync_documents(config: dict, dry_run: bool = False,
-                          verbose: bool = False):
-    """阶段三：执行文档同步。"""
+                          verbose: bool = False, single_file: str = None):
+    """阶段三：执行文档同步。
+
+    single_file: 若指定，则只同步该文件，跳过其余文件。
+    """
     base_dir = config["_base_dir"]
     cfg_path = os.path.abspath(config["_config_path"])
 
     files = collect_md_files(config["source_paths"], base_dir,
                              exclude_files={cfg_path})
-    total = len(files)
-    print(f"\n📄 阶段三：同步文档 (共 {total} 个文件)")
+
+    if single_file:
+        # 解析为绝对路径，用于精确匹配
+        if os.path.isabs(single_file):
+            target_abs = os.path.abspath(single_file)
+        else:
+            target_abs = os.path.abspath(os.path.join(base_dir, single_file))
+
+        matched = [f for f in files if os.path.abspath(f) == target_abs]
+        if not matched:
+            print(f"\n📄 阶段三：指定文件未匹配到任何源文件")
+            print(f"   指定文件: {single_file}")
+            print(f"   解析路径: {target_abs}")
+            return
+        files = matched
+        print(f"\n📄 阶段三：同步指定文件")
+    else:
+        total = len(files)
+        print(f"\n📄 阶段三：同步文档 (共 {total} 个文件)")
 
     stats = {"success": 0, "skip": 0, "fallback": 0, "failed": 0}
     failed_details = []
@@ -905,6 +925,8 @@ def main():
     parser.add_argument("--config", required=True, help="配置文件路径 (dd-sync-cfg.json)")
     parser.add_argument("--dry-run", action="store_true", help="预览模式，不实际执行")
     parser.add_argument("--verbose", action="store_true", help="详细输出")
+    parser.add_argument("--file", dest="single_file",
+                        help="只同步指定的单个 markdown 文件（相对或绝对路径）")
     args = parser.parse_args()
 
     # 检测 dws
@@ -927,7 +949,8 @@ def main():
         sys.exit("❌ 阶段二失败，终止同步")
 
     # 阶段三
-    phase3_sync_documents(config, dry_run=args.dry_run, verbose=args.verbose)
+    phase3_sync_documents(config, dry_run=args.dry_run, verbose=args.verbose,
+                          single_file=args.single_file)
 
 
 if __name__ == "__main__":
