@@ -71,9 +71,9 @@ AI 只需做一件事：运行 `python scripts/sync.py --config dd-sync-cfg.json
 | `source_paths`                          | string[] | AI       | 项目根目录的相对路径，可混用目录和文件           |
 | `knowledge_base.name`                   | string   | AI       | 知识库名称（仅用于人类阅读）                     |
 | `knowledge_base.workspace_id`           | string   | AI       | 知识库 workspace_id，必填                        |
-| `root_folder.name`                      | string   | AI       | 目标根文件夹名                                   |
-| `root_folder.node_id`                   | string   | 脚本回填 | 创建/找到文件夹后填入                            |
-| `root_folder.doc_url`                   | string   | 脚本回填 | 创建/找到文件夹后填入                            |
+| `root_folder.name`                      | string   | AI       | 目标根文件夹名（仅用于人类阅读）                 |
+| `root_folder.node_id`                   | string   | AI       | 根文件夹 node_id，空 = 上传到知识库根目录        |
+| `root_folder.doc_url`                   | string   | AI       | 根文件夹 doc_url                                 |
 | `folder_mapping`                        | array    | AI       | 为空数组时表示无子目录映射，所有文档直放根文件夹 |
 | `folder_mapping[].local_dir`            | string   | AI       | 本地子目录路径（相对于 `source_paths` 中的目录） |
 | `folder_mapping[].dingtalk_folder_name` | string   | AI       | 空字符串 = 使用 `local_dir` 的末级目录名         |
@@ -114,15 +114,16 @@ sync.py
 │   └── validate_config(config)    启动时校验必填字段
 │
 ├── DingTalk 模块（封装 dws 命令）
-│   ├── run_dws(args) → (returncode, stdout, stderr)
-│   ├── list_folder(parent_node_id=None, workspace_id=None) → [{name, nodeId, nodeType, docUrl}]
-│   ├── create_folder(name, parent_node_id=None, workspace_id=None) → {nodeId, docUrl}
-│   ├── ensure_folder(name, parent_node_id=None, workspace_id=None) → {nodeId, docUrl}
-│   │   └── 先 list_folder 查找同名 → 有则复用，无则 create_folder
-│   ├── create_doc(name, content_file, folder_node_id) → {nodeId, docUrl}
-│   ├── update_doc(node_id_or_url, content_file) → {success, nodeId}
-│   ├── update_doc_overwrite(node_id, content_file) → bool
-│   └── update_doc_append(node_id, content_file) → bool
+│   ├── run_dws(args, dry_run=False) → dict
+│   ├── list_folder(workspace_id=None, parent_node_id=None) → [{name, nodeId, nodeType, docUrl}]
+│   ├── find_folder_by_name(name, workspace_id=None, parent_node_id=None) → Optional[dict]
+│   ├── create_folder(name, workspace_id=None, parent_node_id=None) → Optional[dict]
+│   ├── ensure_folder(name, workspace_id=None, parent_node_id=None) → Optional[dict]
+│   │   └── 先 find_folder_by_name 查找同名 → 有则复用，无则 create_folder
+│   ├── create_doc(name, content_file, folder_node_id, workspace_id=None) → Optional[dict]
+│   ├── update_doc_overwrite(node_id_or_url, content_file) → dict
+│   ├── update_doc_append(node_id, content_file) → dict
+│   └── is_doc_deleted_error(resp) → bool
 │
 ├── Markdown 模块
 │   ├── parse_frontmatter(filepath) → (frontmatter_dict, body)
@@ -136,9 +137,9 @@ sync.py
 │
 └── Sync 主流程
     ├── phase2_prepare_folders(config)
-    │   ├── ensure root_folder 存在
+    │   ├── root_folder.node_id 为空 → 设为 workspace_id（上传到知识库根目录）
     │   ├── 遍历 folder_mapping，ensure 每个子文件夹
-    │   └── save_config 回填所有 node_id/doc_url
+    │   └── save_config 回填子文件夹 node_id/doc_url
     │
     └── phase3_sync_documents(config)
         ├── collect_md_files
@@ -220,14 +221,14 @@ def write_frontmatter(filepath: str, updates: dict):
 
 ### 5.3 dws 命令映射
 
-| 操作                   | dws 命令                                                                                              | 关键返回值                                 |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| 列出知识库根目录       | `dws doc list --workspace <WS_ID> --format json`                                                      | `nodes[].{name, nodeId, nodeType, docUrl}` |
-| 列出文件夹内容         | `dws doc list --folder <node_id> --format json`                                                       | `nodes[].{name, nodeId, nodeType, docUrl}` |
-| 创建文件夹（知识库根） | `dws doc folder create --name "x" --workspace <WS_ID> --format json`                                  | `{nodeId, docUrl, name, folderId}`         |
-| 创建文件夹（子目录）   | `dws doc folder create --name "x" --folder <parent_node_id> --format json`                            | `{nodeId, docUrl, name, folderId}`         |
-| 创建文档               | `dws doc create --name "x" --content-file /tmp/x.md --folder <node_id> --format json`                 | `{nodeId, docUrl, name}`                   |
-| 更新文档               | `dws doc update --node <doc_id_or_url> --content-file /tmp/x.md --mode overwrite --format json --yes` | `{success, nodeId, mode}`                  |
+| 操作                   | dws 命令                                                                                                                        | 关键返回值                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| 列出知识库根目录       | `dws doc list --workspace <WS_ID> --format json`                                                                                | `nodes[].{name, nodeId, nodeType, docUrl}` |
+| 列出文件夹内容         | `dws doc list --folder <node_id> --format json`                                                                                 | `nodes[].{name, nodeId, nodeType, docUrl}` |
+| 创建文件夹（知识库根） | `dws doc folder create --name "x" --workspace <WS_ID> --format json`                                                            | `{nodeId, docUrl, name, folderId}`         |
+| 创建文件夹（子目录）   | `dws doc folder create --name "x" --folder <parent_node_id> --format json`                                                      | `{nodeId, docUrl, name, folderId}`         |
+| 创建文档               | `dws doc create --name "x" --content-file /tmp/x.md --folder <node_id> --format json`                                           | `{nodeId, docUrl, name}`                   |
+| 更新文档               | `dws doc update --node <doc_id_or_url> --content-file /tmp/x.md --mode overwrite --content-format markdown --format json --yes` | `{success, nodeId, mode}`                  |
 
 > **注意**：`--mode overwrite` 必须带 `--yes`，否则 dws 会返回错误 `--mode overwrite requires --yes`。
 
@@ -235,12 +236,10 @@ def write_frontmatter(filepath: str, updates: dict):
 
 ```
 ensure_root_folder(config):
-    if root_folder.node_id 已有且有效 → skip
-    else:
-        → list_folder(workspace_id=KB_WS_ID) 在知识库根目录找同名
-        → 找到（nodeType == "folder" && name 匹配）→ 复用 nodeId, docUrl
-        → 未找到 → create_folder(name, workspace_id=KB_WS_ID)
-    → 回填 root_folder.node_id, root_folder.doc_url
+    脚本不负责创建 root_folder。
+    if root_folder.node_id 已有 → 直接使用
+    else → 无 node_id 表示上传到知识库根目录，root_folder.node_id = workspace_id
+    → 不回填 root_folder
 
 ensure_sub_folders(config):
     for each mapping in folder_mapping:
@@ -281,15 +280,16 @@ sync_one_file(filepath, config):
         tmp_path = f.name
 
     try:
-        if 'dingding_link' in fm:
+        if 'dingding_link' in fm and fm['dingding_link']:
             # 更新
-            result = update_doc(fm['dingding_link'], tmp_path)
-            if result is None:
-                # 更新失败，检查是否因文档被删除
-                # 判断条件：error.message == "workspace node has been recycled"
+            resp = update_doc_overwrite(fm['dingding_link'], tmp_path)
+            if resp.get('success'):
+                fm['dingding_updated'] = now_iso8601()
+            elif is_doc_deleted_error(resp):
+                # 文档已删除，降级为新建
                 result = create_doc(title, tmp_path, target_node_id)
                 fm['dingding_link'] = result['docUrl']
-            fm['dingding_updated'] = now_iso8601()
+                fm['dingding_updated'] = now_iso8601()
         else:
             # 新建
             result = create_doc(title, tmp_path, target_node_id)
@@ -388,12 +388,12 @@ sync_one_file_update_large(filepath, fm, config):
 #### 新增 DingTalk 模块函数
 
 ```
-update_doc_append(node_id, content_file) → bool:
+update_doc_append(node_id, content_file) → dict:
     dws doc update --node <node_id> --content-file <content_file>
                    --mode append --content-format markdown --format json --yes
 
-update_doc_overwrite(node_id, content_file) → bool:
-    dws doc update --node <node_id> --content-file <content_file>
+update_doc_overwrite(node_id_or_url, content_file) → dict:
+    dws doc update --node <node_id_or_url> --content-file <content_file>
                    --mode overwrite --content-format markdown --format json --yes
 ```
 
@@ -485,7 +485,7 @@ dd-sync v1
   [CREATE] notes/readme.md → "说明" (https://alidocs.dingtalk.com/...)
 
 ========================================
-结果: ✅ 4 成功   ⚠️ 1 跳过   ❌ 0 失败
+结果: ✅ 4 成功   ⚠️ 0 降级   ⏭️ 1 跳过   ❌ 0 失败
 ========================================
 ```
 

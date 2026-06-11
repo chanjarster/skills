@@ -539,6 +539,39 @@ def test_chunked_update(ctx: dict, config_path: str, group_label: str):
 
 
 # ─────────────────────────────────────────
+# Group B 根文件夹预创建
+# ─────────────────────────────────────────
+
+
+def setup_group_b_root_folder() -> dict:
+    """为 Group B 预创建根文件夹（sync.py 不再负责创建 root_folder）。
+
+    Returns:
+        {"root_folder.node_id": ..., "root_folder.doc_url": ...}
+    """
+    nodes = run_dws("doc", "list", "--workspace", WORKSPACE_ID)
+    for n in nodes.get("nodes", []):
+        if n.get("name") == TEST_ROOT_FOLDER_B:
+            print(f"  ℹ️  Group B 根文件夹已存在 (nodeId: {n['nodeId']})")
+            return {
+                "root_folder.node_id": n["nodeId"],
+                "root_folder.doc_url": n.get("docUrl", ""),
+            }
+
+    result = run_dws("doc", "folder", "create", "--name", TEST_ROOT_FOLDER_B,
+                     "--workspace", WORKSPACE_ID)
+    if result.get("success"):
+        print(f"  ✅ Group B 根文件夹已创建 (nodeId: {result['nodeId']})")
+        return {
+            "root_folder.node_id": result["nodeId"],
+            "root_folder.doc_url": result.get("docUrl", ""),
+        }
+    else:
+        print(f"  ❌ 无法创建 Group B 根文件夹: {result}")
+        sys.exit(1)
+
+
+# ─────────────────────────────────────────
 # 清理
 # ─────────────────────────────────────────
 
@@ -594,14 +627,16 @@ def cleanup_all(ctx: dict):
 
 
 def run_test_group(ctx: dict, group: str, label: str,
-                   tests_empty: list, tests_prefilled: list):
+                   tests_empty: list, tests_prefilled: list,
+                   root_folder_ids: dict | None = None):
     """运行一组测试（先空配置，后预填配置）。
 
-    tests_empty:    用空配置运行的测试列表 [(name, fn), ...]
-    tests_prefilled: 用预填配置运行的测试列表 [(name, fn), ...]
+    tests_empty:      用空配置运行的测试列表 [(name, fn), ...]
+    tests_prefilled:  用预填配置运行的测试列表 [(name, fn), ...]
+    root_folder_ids:  预填 root_folder 的 node_id/doc_url（用于 Group B，sync.py 不创建 root_folder）
     """
     # ── 阶段1：空配置测试 ──
-    empty_config = make_config(ctx, group)  # node_ids=None → 全空
+    empty_config = make_config(ctx, group, root_folder_ids)
     for name, test_fn in tests_empty:
         try:
             test_fn(ctx, empty_config, label)
@@ -705,6 +740,10 @@ def main():
     print("🟠 Group B：有 root_folder（上传到知识库下指定文件夹）")
     print(f"{'=' * 50}")
 
+    # sync.py 不再创建 root_folder，需测试前手动创建
+    print(f"📁 创建 Group B 根文件夹: {TEST_ROOT_FOLDER_B}")
+    root_ids_b = setup_group_b_root_folder()
+
     tests_b_empty = [
         ("Dry-run 预览", test_dry_run),
         ("首次同步（新建文档+大文件分块）", test_create_new_docs),
@@ -719,7 +758,8 @@ def main():
     ]
 
     try:
-        run_test_group(ctx, "b", "Group B", tests_b_empty, tests_b_prefilled)
+        run_test_group(ctx, "b", "Group B", tests_b_empty, tests_b_prefilled,
+                       root_folder_ids=root_ids_b)
         all_tests_passed += len(tests_b_empty) + len(tests_b_prefilled)
     except SystemExit:
         if not args.keep:

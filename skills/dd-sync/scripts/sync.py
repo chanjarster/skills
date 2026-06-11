@@ -28,8 +28,8 @@ import yaml
 # 常量
 # ────────────────────────────────────────────────────────────
 
-CHUNK_SIZE_THRESHOLD = 8_000   # 字符数，超过此值触发分块
-MAX_CHUNK_SIZE = 8_000         # 每块最大 8000 字符（dws API 限制 10000 字符，留 20% 余量）
+CHUNK_SIZE_THRESHOLD = 9_000   # 字符数，超过此值触发分块
+MAX_CHUNK_SIZE = 9_000         # 每块最大 9000 字符（dws API 限制 10000 字符，留 10% 余量）
 CST = timezone(timedelta(hours=8))
 
 
@@ -482,21 +482,11 @@ def phase2_prepare_folders(config: dict, dry_run: bool = False):
     rf = config["root_folder"]
 
     # 确保根文件夹
-    if not rf.get("name"):
-        # root_folder.name 为空 → 文档直接上传到知识库根目录
-        rf["node_id"] = ws_id
-        print(f"  ℹ️  未指定 root_folder，文档将上传到知识库根目录")
-    elif rf.get("node_id"):
-        print(f"  ✅ root_folder \"{rf['name']}\" — 已有 node_id，跳过")
+    if rf.get("node_id"):
+        print(f"  ✅ root_folder \"{rf.get('name', '根目录')}\" — 已有 node_id，跳过")
     else:
-        result = ensure_folder(rf["name"], workspace_id=ws_id, dry_run=dry_run)
-        if result:
-            rf["node_id"] = result["nodeId"]
-            rf["doc_url"] = result["docUrl"]
-            print(f"  ✅ root_folder \"{rf['name']}\" (nodeId: {rf['node_id']})")
-        else:
-            print(f"  ❌ root_folder \"{rf['name']}\" 创建失败")
-            return False
+        rf["node_id"] = ws_id
+        print(f"  ℹ️  root_folder 无 node_id，文档将上传到知识库根目录")
 
     # 确保子文件夹
     root_node_id = rf["node_id"]
@@ -669,10 +659,24 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
 
     # 分块更新
     chunks = split_content(body)
-    if _chunked_update(doc_link, chunks):
+    update_resp = _chunked_update(doc_link, chunks)
+    if update_resp is True:
         write_frontmatter(filepath, dingding_updated=now_ts)
         print(f"  [UPDATE-chunk] {rel_path} → \"{title}\" (已更新, {len(chunks)} 片)")
         return "success"
+    elif isinstance(update_resp, dict) and is_doc_deleted_error(update_resp):
+        # 文档已删除，降级为分块新建
+        print(f"  [UPDATE-chunk] {rel_path} → ⚠️ 文档已删除，降级为分块新建")
+        new_result = _chunked_create(title, chunks, target_node_id, ws_id)
+        if new_result:
+            write_frontmatter(filepath,
+                              dingding_link=new_result["docUrl"],
+                              dingding_updated=now_ts)
+            print(f"    ✅ 分块重建成功 ({new_result['docUrl']})")
+            return "fallback"
+        else:
+            print(f"    ❌ 分块重建失败")
+            return "failed"
     else:
         print(f"  [UPDATE-chunk] {rel_path} → ❌ 分块更新失败")
         return "failed"
@@ -713,8 +717,12 @@ def _chunked_create(title: str, chunks: list[str],
     return {"docUrl": doc_url}
 
 
-def _chunked_update(doc_link: str, chunks: list[str]) -> bool:
-    """分块更新：第一片 overwrite，后续 append。"""
+def _chunked_update(doc_link: str, chunks: list[str]):
+    """分块更新：第一片 overwrite，后续 append。
+
+    Returns:
+        True on success, or the failed response dict on failure.
+    """
     # 第一片 overwrite
     tmp_first = _write_temp_file(chunks[0])
     try:
@@ -723,7 +731,7 @@ def _chunked_update(doc_link: str, chunks: list[str]) -> bool:
         os.unlink(tmp_first)
 
     if not result.get("success"):
-        return False
+        return result  # 返回失败响应，供调用方检查是否因文档被删除
 
     # 获取 nodeId 用于后续 append
     node_id = result.get("nodeId", doc_link)
@@ -737,7 +745,7 @@ def _chunked_update(doc_link: str, chunks: list[str]) -> bool:
                 r = update_doc_append(node_id, tmp, dry_run=False)
             if not r.get("success"):
                 print(f"    ❌ 分片 {i}/{len(chunks)} append 失败")
-                return False
+                return r
         finally:
             os.unlink(tmp)
 
