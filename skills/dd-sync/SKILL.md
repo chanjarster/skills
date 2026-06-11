@@ -10,10 +10,12 @@ description: >-
 
 # dd-sync - 钉钉知识库文档同步 skill
 
-> 本 skill 使用 **dws skill** 和 **dws** 命令操作钉钉知识库。
-> 如果发现本地没有 **dws skill** 和 **dws** 命令，那么提示用户到 https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md 安装下载
+> 本 skill 依赖 **dws skill** 和 **dws** 命令操作钉钉知识库，如果缺少相关依赖，则：
+>
+> - 按照 https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md 安装下载
+> - 使用 `dws auth login` 完成 dws 工具的授权过程
 
-## 概述
+## 技能概述
 
 将本地目录中的 Markdown 文档批量同步到钉钉知识库，支持新建和更新已有文档。通过 YAML frontmatter 跟踪每个文档的同步状态。
 
