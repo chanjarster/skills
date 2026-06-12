@@ -63,17 +63,22 @@ def run_dws(*args: str) -> dict:
     return {"_raw": output[:200], "_stderr": r.stderr.strip()[:200]}
 
 
-def assert_in(text: str, output: str, label: str):
+def assert_in(text: str, output: str, label: str, stderr: str = ""):
     if text not in output:
         print(f"\n❌ FAIL [{label}]: 期望包含 '{text}'")
         print(f"   实际输出(尾):\n{output[-1500:]}")
+        if stderr:
+            print(f"   错误输出(stderr):\n{stderr[-1500:]}")
         sys.exit(1)
     print(f"  ✅ {label}")
 
 
-def assert_not_in(text: str, output: str, label: str):
+def assert_not_in(text: str, output: str, label: str, stderr: str = ""):
     if text in output:
         print(f"\n❌ FAIL [{label}]: 不应包含 '{text}'")
+        print(f"   实际输出(尾):\n{output[-1500:]}")
+        if stderr:
+            print(f"   错误输出(stderr):\n{stderr[-1500:]}")
         sys.exit(1)
     print(f"  ✅ {label}")
 
@@ -368,11 +373,12 @@ def test_dry_run(ctx: dict, config_path: str, group_label: str):
     print(f"\n── [{group_label}] 测试: Dry-run 模式 ──")
     r = run_sync(config_path, "--dry-run")
     output = r.stdout
+    err = r.stderr
 
-    assert_in("[DRY RUN]", output, "dry-run 标记")
-    assert_in("阶段二", output, "阶段二标题")
-    assert_in("阶段三", output, "阶段三标题")
-    assert_in("[CREATE]", output, "新建操作")
+    assert_in("[DRY RUN]", output, "dry-run 标记", stderr=err)
+    assert_in("阶段二", output, "阶段二标题", stderr=err)
+    assert_in("阶段三", output, "阶段三标题", stderr=err)
+    assert_in("[CREATE]", output, "新建操作", stderr=err)
 
     # dry-run 不应修改任何文件
     docs_dir = ctx["flat_dir"] if group_label.startswith("Group A") else ctx["nested_dir"]
@@ -385,11 +391,12 @@ def test_create_new_docs(ctx: dict, config_path: str, group_label: str):
     print(f"\n── [{group_label}] 测试: 首次同步（新建文档）──")
     r = run_sync(config_path)
     output = r.stdout
+    err = r.stderr
 
-    assert_in("[CREATE]", output, "新建操作标记")
-    assert_in("✅", output, "成功标记")
-    assert_not_in("[UPDATE]", output, "不应有更新操作")
-    assert_not_in("失败详情", output, "无失败详情区块")
+    assert_in("[CREATE]", output, "新建操作标记", stderr=err)
+    assert_in("✅", output, "成功标记", stderr=err)
+    assert_not_in("[UPDATE]", output, "不应有更新操作", stderr=err)
+    assert_not_in("失败详情", output, "无失败详情区块", stderr=err)
 
     # 根据 group 决定检查哪个目录
     docs_dir = ctx["flat_dir"] if group_label.startswith("Group A") else ctx["nested_dir"]
@@ -440,10 +447,11 @@ def test_skip_empty(ctx: dict, config_path: str, group_label: str):
     print(f"\n── [{group_label}] 测试: 空文档跳过 ──")
     r = run_sync(config_path, "--verbose")
     output = r.stdout
+    err = r.stderr
 
-    assert_in("[SKIP]", output, "跳过详情标记")
-    assert_in("empty.md", output, "empty.md 出现在跳过信息中")
-    assert_in("正文为空", output, "跳过原因")
+    assert_in("[SKIP]", output, "跳过详情标记", stderr=err)
+    assert_in("empty.md", output, "empty.md 出现在跳过信息中", stderr=err)
+    assert_in("正文为空", output, "跳过原因", stderr=err)
 
     # 空文档不应被写入 frontmatter
     docs_dir = ctx["flat_dir"] if group_label.startswith("Group A") else ctx["nested_dir"]
@@ -466,9 +474,10 @@ def test_update_docs(ctx: dict, config_path: str, group_label: str):
 
     r = run_sync(config_path)
     output = r.stdout
+    err = r.stderr
 
-    assert_in("[UPDATE]", output, "更新操作标记")
-    assert_not_in("失败详情", output, "不应有失败详情")
+    assert_in("[UPDATE]", output, "更新操作标记", stderr=err)
+    assert_not_in("失败详情", output, "不应有失败详情", stderr=err)
     assert_file_contains(quickstart, "dingding_updated", "quickstart.md 更新了 dingding_updated")
     # 更新后不应出现重复 frontmatter
     assert_single_frontmatter(quickstart, "更新后 quickstart.md 无重复 frontmatter")
@@ -479,11 +488,12 @@ def test_folders_reused(ctx: dict, config_path: str, group_label: str):
     print(f"\n── [{group_label}] 测试: 文件夹复用 ──")
     r = run_sync(config_path, "--verbose")
     output = r.stdout
+    err = r.stderr
 
     if group_label.startswith("Group A"):
-        assert_in("已有 node_id，跳过", output, "Group A 文件夹复用信息")
+        assert_in("已有 node_id，跳过", output, "Group A 文件夹复用信息", stderr=err)
     else:
-        assert_in("已有 node_id，跳过", output, "Group B 文件夹复用信息")
+        assert_in("已有 node_id，跳过", output, "Group B 文件夹复用信息", stderr=err)
 
 
 def test_no_failures(ctx: dict, config_path: str, group_label: str):
@@ -491,9 +501,10 @@ def test_no_failures(ctx: dict, config_path: str, group_label: str):
     print(f"\n── [{group_label}] 测试: 回归验证（无失败）──")
     r = run_sync(config_path)
     output = r.stdout
+    err = r.stderr
 
-    assert_not_in("失败详情", output, "无失败详情区块")
-    assert_in("❌ 0 失败", output, "失败计数为 0")
+    assert_not_in("失败详情", output, "无失败详情区块", stderr=err)
+    assert_in("❌ 0 失败", output, "失败计数为 0", stderr=err)
 
 
 # ─────────────────────────────────────────
@@ -528,10 +539,11 @@ def test_chunked_update(ctx: dict, config_path: str, group_label: str):
 
     r = run_sync(config_path)
     output = r.stdout
+    err = r.stderr
 
-    assert_in("[UPDATE-chunk]", output, "分块更新标记")
-    assert_in("功能手册", output, "功能手册出现在输出中")
-    assert_not_in("失败详情", output, "不应有失败详情")
+    assert_in("[UPDATE-chunk]", output, "分块更新标记", stderr=err)
+    assert_in("功能手册", output, "功能手册出现在输出中", stderr=err)
+    assert_not_in("失败详情", output, "不应有失败详情", stderr=err)
     # 验证分块更新后 frontmatter 已更新
     assert_file_contains(manual, "dingding_updated", "功能手册.md 分块更新后 dingding_updated 已刷新")
     # 分块更新后不应出现重复 frontmatter
@@ -684,6 +696,9 @@ def main():
     print("🔍 检查前置条件...")
     if not SCRIPT_PATH.exists():
         sys.exit(f"❌ 脚本不存在: {SCRIPT_PATH}")
+
+    if not WORKSPACE_ID:
+        sys.exit("❌ 请设置环境变量 WORKSPACE_ID，如: WORKSPACE_ID=YOUR_ID python tests/test_sync.py")
 
     try:
         subprocess.run(["dws", "--version"], capture_output=True, check=True)

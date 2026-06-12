@@ -59,26 +59,28 @@ AI 只需做一件事：运行 `python scripts/sync.py --config dd-sync-cfg.json
       "node_id": "",
       "doc_url": ""
     }
-  ]
+  ],
+  "ignore_patterns": ["**/draft/*.md", "*.tmp.md"]
 }
 ```
 
 ### 3.2 字段约定
 
-| 字段                                    | 类型     | 谁填     | 说明                                             |
-| --------------------------------------- | -------- | -------- | ------------------------------------------------ |
-| `version`                               | string   | AI       | 固定 `"1"`，预留升级空间                         |
-| `source_paths`                          | string[] | AI       | 项目根目录的相对路径，可混用目录和文件           |
-| `knowledge_base.name`                   | string   | AI       | 知识库名称（仅用于人类阅读）                     |
-| `knowledge_base.workspace_id`           | string   | AI       | 知识库 workspace_id，必填                        |
-| `root_folder.name`                      | string   | AI       | 目标根文件夹名（仅用于人类阅读）                 |
-| `root_folder.node_id`                   | string   | AI       | 根文件夹 node_id，空 = 上传到知识库根目录        |
-| `root_folder.doc_url`                   | string   | AI       | 根文件夹 doc_url                                 |
-| `folder_mapping`                        | array    | AI       | 为空数组时表示无子目录映射，所有文档直放根文件夹 |
-| `folder_mapping[].local_dir`            | string   | AI       | 本地子目录路径（相对于 `source_paths` 中的目录） |
-| `folder_mapping[].dingtalk_folder_name` | string   | AI       | 空字符串 = 使用 `local_dir` 的末级目录名         |
-| `folder_mapping[].node_id`              | string   | 脚本回填 |                                                  |
-| `folder_mapping[].doc_url`              | string   | 脚本回填 |                                                  |
+| 字段                                    | 类型     | 谁填     | 说明                                                        |
+| --------------------------------------- | -------- | -------- | ----------------------------------------------------------- |
+| `version`                               | string   | AI       | 固定 `"1"`，预留升级空间                                    |
+| `source_paths`                          | string[] | AI       | 项目根目录的相对路径，可混用目录和文件                      |
+| `knowledge_base.name`                   | string   | AI       | 知识库名称（仅用于人类阅读）                                |
+| `knowledge_base.workspace_id`           | string   | AI       | 知识库 workspace_id，必填                                   |
+| `root_folder.name`                      | string   | AI       | 目标根文件夹名（仅用于人类阅读）                            |
+| `root_folder.node_id`                   | string   | AI       | 根文件夹 node_id，空 = 上传到知识库根目录                   |
+| `root_folder.doc_url`                   | string   | AI       | 根文件夹 doc_url                                            |
+| `folder_mapping`                        | array    | AI       | 为空数组时表示无子目录映射，所有文档直放根文件夹            |
+| `folder_mapping[].local_dir`            | string   | AI       | 本地子目录路径（相对于 `source_paths` 中的目录）            |
+| `folder_mapping[].dingtalk_folder_name` | string   | AI       | 空字符串 = 使用 `local_dir` 的末级目录名                    |
+| `folder_mapping[].node_id`              | string   | 脚本回填 |                                                             |
+| `folder_mapping[].doc_url`              | string   | 脚本回填 |                                                             |
+| `ignore_patterns`                       | string[] | AI       | glob 模式数组，匹配的 `.md` 文件不参与同步。可选，默认 `[]` |
 
 ## 4. 脚本结构
 
@@ -133,13 +135,14 @@ sync.py
 │   │   └── 只更新 dingding_link / dingding_updated，保留其他字段
 │   ├── get_doc_title(body, filepath) → str
 │   │   └── 取第一个 "# 标题"，不存在的用文件名
-│   └── collect_md_files(source_paths, base_dir) → [filepath]
-│       └── 递归遍历目录，收集 .md，排除 dd-sync-cfg.json
+│   └── collect_md_files(source_paths, base_dir, exclude_files, ignore_patterns) → [filepath]
+│       └── 递归遍历目录，收集 .md，排除配置文件和 ignore_patterns 匹配的文件
 │
 └── Sync 主流程
     ├── phase2_prepare_folders(config)
     │   ├── root_folder.node_id 为空 → 设为 workspace_id（上传到知识库根目录）
-    │   ├── 遍历 folder_mapping，ensure 每个子文件夹
+    │   ├── collect_md_files 预先收集文件（含 ignore_patterns 过滤）
+    │   ├── 遍历 folder_mapping，只为有实际文件的映射创建文件夹
     │   └── save_config 回填子文件夹 node_id/doc_url
     │
     └── phase3_sync_documents(config, single_file=None)
@@ -243,20 +246,42 @@ ensure_root_folder(config):
     else → 无 node_id 表示上传到知识库根目录，root_folder.node_id = workspace_id
     → 不回填 root_folder
 
-ensure_sub_folders(config):
+pre_check(config):
+    → collect_md_files(source_paths, base_dir, exclude_files, ignore_patterns)
+    → 得到所有实际需要同步的文件列表
+
+ensure_sub_folders(config, all_files):
     for each mapping in folder_mapping:
         dingtalk_name = mapping.dingtalk_folder_name or basename(mapping.local_dir)
-        if mapping.node_id 已有且有效 → skip
+        if mapping.node_id 已有且有效 → skip（保留，不因当前无文件而删除）
         else:
-            → list_folder(parent_node_id=root_folder.node_id) 找同名
-            → 找到（nodeType == "folder" && name 匹配）→ 复用 nodeId, docUrl
-            → 未找到 → create_folder(dingtalk_name, parent_node_id=root_folder.node_id)
-        → 回填 mapping.node_id, mapping.doc_url
+            → 检查该 local_dir 下是否存在于 all_files 中的文件
+            → 没有文件 → 输出 ⏭️ 跳过，不创建文件夹
+            → 有文件：
+                → find_folder_by_name 找同名文件夹
+                → 找到 → 复用 nodeId, docUrl
+                → 未找到 → create_folder
+            → 回填 mapping.node_id, mapping.doc_url
 
 save_config  将回填后的完整配置写回 dd-sync-cfg.json
 ```
 
-### 5.5 文档同步（阶段三）
+### 5.5 忽略模式匹配
+
+`ignore_patterns` 使用 Python `fnmatch.fnmatch()` 进行 glob 模式匹配，匹配对象为文件相对于 `base_dir`（配置文件所在目录）的相对路径。
+
+**匹配示例：**
+
+| 模式              | 匹配的文件                           |
+| ----------------- | ------------------------------------ |
+| `*.tmp.md`        | 根目录下所有 `.tmp.md` 文件          |
+| `**/draft/*.md`   | 任意子目录 `draft/` 下的 `.md` 文件  |
+| `docs/archive/**` | `docs/archive/` 及其子目录下所有文件 |
+| `**/test/**`      | 任意路径中包含 `test/` 的文件        |
+
+> 注意：`fnmatch` 的 `*` 不跨越路径分隔符，`**` 可以。模式不区分大小写（取决于操作系统）。
+
+### 5.6 文档同步（阶段三）
 
 ```
 find_target_folder(filepath, config):
@@ -478,6 +503,7 @@ dd-sync v1
   ✅ root_folder "项目文档" — 已存在，复用 (node_id: abc123)
   ✅ docs/api → "API文档" — 已存在，复用 (node_id: def456)
   ✅ docs/guide → "guide" — 新建 (node_id: ghi789)
+  ⏭️  docs/empty-dir → "empty" — 目录下无待同步文件，跳过创建
 
 📄 阶段三：同步文档 (共 5 个文件)
   [CREATE] docs/api/auth.md → "认证接口" (https://alidocs.dingtalk.com/...)

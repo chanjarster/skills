@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -84,6 +85,9 @@ def load_config(path: str) -> dict:
 
     if "folder_mapping" not in config:
         config["folder_mapping"] = []
+
+    if "ignore_patterns" not in config:
+        config["ignore_patterns"] = []
 
     return config
 
@@ -358,15 +362,30 @@ def get_doc_title(body: str, filepath: str) -> str:
 
 
 def collect_md_files(source_paths: list[str], base_dir: str,
-                     exclude_files: set[str] = None) -> list[str]:
+                     exclude_files: set[str] = None,
+                     ignore_patterns: list[str] = None) -> list[str]:
     """从 source_paths 中收集所有 .md 文件。
 
     - 排除配置文件和 exclude_files 中的文件。
+    - 排除匹配 ignore_patterns 的文件（glob 模式，相对路径匹配）。
     - 目录会递归遍历。
     """
     exclude = exclude_files or set()
+    patterns = ignore_patterns or []
     files = []
     seen = set()
+
+    def _is_ignored(filepath: str) -> bool:
+        """检查文件路径是否匹配任一 ignore 模式。"""
+        # 转换为相对于 base_dir 的路径进行匹配
+        try:
+            rel_path = os.path.relpath(filepath, base_dir)
+        except ValueError:
+            rel_path = filepath
+        for pattern in patterns:
+            if fnmatch.fnmatch(rel_path, pattern):
+                return True
+        return False
 
     for sp in source_paths:
         full_path = os.path.join(base_dir, sp) if not os.path.isabs(sp) else sp
@@ -376,7 +395,8 @@ def collect_md_files(source_paths: list[str], base_dir: str,
                 abs_path = os.path.abspath(full_path)
                 if abs_path not in seen:
                     seen.add(abs_path)
-                    files.append(full_path)
+                    if not _is_ignored(abs_path):
+                        files.append(full_path)
         elif os.path.isdir(full_path):
             for root, _, filenames in os.walk(full_path):
                 for fn in filenames:
@@ -384,7 +404,8 @@ def collect_md_files(source_paths: list[str], base_dir: str,
                         abs_path = os.path.abspath(os.path.join(root, fn))
                         if abs_path not in seen and abs_path not in exclude:
                             seen.add(abs_path)
-                            files.append(os.path.join(root, fn))
+                            if not _is_ignored(abs_path):
+                                files.append(os.path.join(root, fn))
         else:
             print(f"  ⚠️  路径不存在，跳过: {sp}")
 
@@ -582,11 +603,17 @@ def _hard_split(text: str, max_size: int) -> list[str]:
 # ────────────────────────────────────────────────────────────
 
 def phase2_prepare_folders(config: dict, dry_run: bool = False):
-    """阶段二：准备钉钉文件夹结构。"""
+    """阶段二：准备钉钉文件夹结构。
+
+    优先收集所有待同步文件，只为实际有文件的映射创建文件夹，
+    避免创建空目录。
+    """
     print("\n📁 阶段二：准备钉钉文件夹")
 
     ws_id = config["knowledge_base"]["workspace_id"]
     rf = config["root_folder"]
+    base_dir = config["_base_dir"]
+    cfg_path = os.path.abspath(config["_config_path"])
 
     # 确保根文件夹
     if rf.get("node_id"):
@@ -595,24 +622,44 @@ def phase2_prepare_folders(config: dict, dry_run: bool = False):
         rf["node_id"] = ws_id
         print(f"  ℹ️  root_folder 无 node_id，文档将上传到知识库根目录")
 
-    # 确保子文件夹
+    # 预先收集所有文件（含 ignore_patterns 过滤），用于判断哪些目录有内容
+    all_files = collect_md_files(
+        config["source_paths"], base_dir,
+        exclude_files={cfg_path},
+        ignore_patterns=config.get("ignore_patterns", [])
+    )
+
+    # 确保子文件夹（仅为有实际文件的映射创建）
     root_node_id = rf["node_id"]
     for mapping in config.get("folder_mapping", []):
         ddn = mapping["dingtalk_folder_name"] or os.path.basename(
             strip_trailing_slash(mapping["local_dir"])
         )
+
+        # 已有 node_id 的映射，保留（不因当前无文件而删除）
         if mapping.get("node_id"):
             print(f"  ✅ {mapping['local_dir']} → \"{ddn}\" — 已有 node_id，跳过")
+            continue
+
+        # 检查该映射目录下是否有实际需要同步的文件
+        ld = strip_trailing_slash(mapping["local_dir"])
+        has_files = any(
+            is_subpath(os.path.relpath(os.path.abspath(f), base_dir), ld)
+            for f in all_files
+        )
+        if not has_files:
+            print(f"  ⏭️  {mapping['local_dir']} → \"{ddn}\" — 目录下无待同步文件，跳过创建")
+            continue
+
+        result = ensure_folder(ddn, workspace_id=ws_id,
+                               parent_node_id=root_node_id, dry_run=dry_run)
+        if result:
+            mapping["node_id"] = result["nodeId"]
+            mapping["doc_url"] = result["docUrl"]
+            print(f"  ✅ {mapping['local_dir']} → \"{ddn}\" (nodeId: {mapping['node_id']})")
         else:
-            result = ensure_folder(ddn, workspace_id=ws_id,
-                                   parent_node_id=root_node_id, dry_run=dry_run)
-            if result:
-                mapping["node_id"] = result["nodeId"]
-                mapping["doc_url"] = result["docUrl"]
-                print(f"  ✅ {mapping['local_dir']} → \"{ddn}\" (nodeId: {mapping['node_id']})")
-            else:
-                print(f"  ❌ {mapping['local_dir']} → \"{ddn}\" 创建失败")
-                return False
+            print(f"  ❌ {mapping['local_dir']} → \"{ddn}\" 创建失败")
+            return False
 
     # 回填配置
     if not dry_run:
@@ -869,7 +916,8 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
     cfg_path = os.path.abspath(config["_config_path"])
 
     files = collect_md_files(config["source_paths"], base_dir,
-                             exclude_files={cfg_path})
+                             exclude_files={cfg_path},
+                             ignore_patterns=config.get("ignore_patterns", []))
 
     if single_file:
         # 解析为绝对路径，用于精确匹配

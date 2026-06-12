@@ -123,7 +123,8 @@ description: >-
       "doc_url": "",
       "comment": "node_id/doc_url 为空表示待脚本创建"
     }
-  ]
+  ],
+  "ignore_patterns": ["**/draft/*.md", "*.tmp.md"]
 }
 ```
 
@@ -131,6 +132,7 @@ description: >-
 
 - `root_folder.node_id` / `root_folder.doc_url`：Q3 已知时填入，否则留空让脚本创建
 - `folder_mapping[].node_id` / `folder_mapping[].doc_url`：始终留空，由脚本创建后回填
+- `ignore_patterns`：glob 模式数组，匹配的 `.md` 文件将跳过不同步。可选，默认为空数组 `[]`
 
 **每次同步时**，先检查 `dd-sync-cfg.json` 是否存在：
 
@@ -173,7 +175,7 @@ python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json --file 
 **脚本自动完成：**
 
 1. **校验配置**：JSON 格式校验、必填字段检查
-2. **阶段二 — 准备文件夹**：检查 root_folder 和 folder_mapping 中的 `node_id` 是否为空，为空则在钉钉上创建/复用文件夹，回填 `node_id` 和 `doc_url` 到配置文件
+2. **阶段二 — 准备文件夹**：检查 root_folder 和 folder_mapping 中的 `node_id` 是否为空，为空则在钉钉上创建/复用文件夹。若某个映射目录在应用 `ignore_patterns` 后无待同步文件，则不创建对应文件夹。完成后回填 `node_id` 和 `doc_url` 到配置文件
 3. **阶段三 — 同步文档**：
    - 遍历 `source_paths`，收集所有 `.md` 文件（排除配置文件自身）
    - 跳过正文为空的文档
@@ -193,6 +195,7 @@ dd-sync v1  [DRY RUN]
   ✅ root_folder "项目文档" — 已有 node_id，跳过
   ✅ docs/api → "API文档" (nodeId: <NODE_ID_1>)
   ✅ docs/ui → "UI设计" (nodeId: <NODE_ID_1>)
+  ⏭️  docs/empty → "empty" — 目录下无待同步文件，跳过创建
 
 📄 阶段三：同步文档 (共 5 个文件)
   [CREATE] docs/api/auth.md → "认证接口" (https://...)
@@ -213,9 +216,11 @@ dd-sync v1  [DRY RUN]
 1. **首次全量同步**：所有文档走「新建」路径。
 2. **指定同步配置文件**：用户可以指定【同步配置文件】，一个项目下也可以有多个【同步配置文件】
 3. **frontmatter 保留**：编辑源文档时保留已有的 `dingding_link` / `dingding_updated` 字段，避免重复创建。
-4. **时间格式**：使用 ISO 8601 带时区，如 `2026-06-09T14:33:59+08:00`。
-5. **大文件处理**：脚本内置分块上传（>8000 字符自动触发），按 H2 → H3 → 段落边界切分，单次失败自动重试。
-6. **节点 ID 缓存**：配置文件中的 `node_id` / `doc_url` 会在首次运行后持久化，后续运行复用，避免重复查找/创建。
+4. **跳过空文件夹**：若 `folder_mapping` 中某个目录在应用 `ignore_patterns` 后无待同步文件，脚本不为其创建钉钉文件夹。已有 `node_id` 的映射不受影响。
+5. **时间格式**：使用 ISO 8601 带时区，如 `2026-06-09T14:33:59+08:00`。
+6. **大文件处理**：脚本内置分块上传（>8000 字符自动触发），按 H2 → H3 → 段落边界切分，单次失败自动重试。
+7. **节点 ID 缓存**：配置文件中的 `node_id` / `doc_url` 会在首次运行后持久化，后续运行复用，避免重复查找/创建。
+8. **忽略模式**：通过 `ignore_patterns` 可排除不想同步的 `.md` 文件（如草稿、临时文件）。支持 glob 模式，如 `**/draft/*.md`、`*.tmp.md`。
 
 ---
 
