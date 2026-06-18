@@ -13,7 +13,7 @@ description: >-
 > 本 skill 依赖 **dws skill** 和 **dws** 命令操作钉钉知识库，如果缺少相关依赖，则：
 >
 > - 按照 https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md 安装下载
-> - 使用 `dws auth login` 完成 dws 工具的授权过程
+> - 运行 `dws auth login` 让用户完成 dws 工具的授权过程
 
 ## 技能概述
 
