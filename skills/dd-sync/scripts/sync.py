@@ -38,6 +38,12 @@ CST = timezone(timedelta(hours=8))
 # 图片引用正则：匹配 ![alt](path)
 IMG_PATTERN = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
+# 文档交叉引用正则：匹配 [text](path.md) 或 [text](path.md#anchor)
+# 排除图片引用（![]()）和外部 HTTP(S) URL
+CROSS_REF_PATTERN = re.compile(
+    r'(?<!\!)\[([^\]]*)\]\(((?!https?://)[^)]*\.md(?:#[^)]*)?)\)'
+)
+
 
 def now_iso8601() -> str:
     """返回当前时间的 ISO 8601 格式字符串（东八区）。"""
@@ -840,6 +846,69 @@ def _insert_img_fallback(node_id: str, ref_block_id: str, img: dict,
     run_dws(args, dry_run=False)
 
 
+# ────────────────────────────────────────────────────────────
+# 交叉引用模块
+# ────────────────────────────────────────────────────────────
+
+
+def discover_cross_refs(body: str) -> list[dict]:
+    """扫描 body 中所有指向 .md 文件的交叉引用链接。
+
+    Returns:
+        [{"raw": "[text](path.md#anchor)", "text": "text",
+          "link_path": "path.md#anchor", "path_part": "path.md",
+          "anchor": "#anchor"}, ...]
+    """
+    refs = []
+    for m in CROSS_REF_PATTERN.finditer(body):
+        full_path = m.group(2)
+        if "#" in full_path:
+            path_part, anchor = full_path.split("#", 1)
+            anchor = "#" + anchor
+        else:
+            path_part = full_path
+            anchor = ""
+        refs.append({
+            "raw": m.group(0),
+            "text": m.group(1),
+            "link_path": full_path,
+            "path_part": path_part,
+            "anchor": anchor,
+        })
+    return refs
+
+
+def resolve_cross_ref_abs_path(link_path: str, file_dir: str) -> str:
+    """将链接中的相对路径解析为绝对路径。"""
+    return os.path.normpath(os.path.join(file_dir, link_path))
+
+
+def build_path_to_url_map(files: list[str]) -> dict[str, str]:
+    """构建 本地文件绝对路径 → 钉钉文档 URL 的映射。
+
+    从各文件的 frontmatter 中读取 dingding_link。
+    """
+    path_to_url = {}
+    for f in files:
+        fm, _ = parse_frontmatter(f)
+        link = fm.get("dingding_link")
+        if link:
+            path_to_url[os.path.abspath(f)] = link
+    return path_to_url
+
+
+def replace_cross_refs(body: str, cross_refs: list[dict],
+                       path_to_url: dict[str, str],
+                       file_dir: str) -> str:
+    """替换 body 中的交叉引用为钉钉文档链接。"""
+    result = body
+    for ref in cross_refs:
+        abs_path = resolve_cross_ref_abs_path(ref["path_part"], file_dir)
+        dingtalk_url = path_to_url.get(abs_path)
+        if dingtalk_url:
+            new_link = f'[{ref["text"]}]({dingtalk_url})'
+            result = result.replace(ref["raw"], new_link, 1)
+    return result
 
 
 def phase2_prepare_folders(config: dict, dry_run: bool = False):
@@ -907,6 +976,70 @@ def phase2_prepare_folders(config: dict, dry_run: bool = False):
     return True
 
 
+def phase2b_prepare_documents(config: dict, dry_run: bool = False,
+                               verbose: bool = False,
+                               single_file: str = None) -> bool:
+    """阶段二-B：为所有新文件创建空钉钉文档，预先获取 dingding_link。
+
+    创建空文档后立即将 URL 写入 frontmatter，确保阶段三开始前
+    所有文件的 dingding_link 已就绪，可以完整解决交叉引用问题。
+
+    single_file: 若指定，仍为所有新文件创建空文档（保证路径映射完整），
+                 但阶段三只同步该文件。
+    """
+    base_dir = config["_base_dir"]
+    cfg_path = os.path.abspath(config["_config_path"])
+    ws_id = config["knowledge_base"]["workspace_id"]
+
+    # 收集所有文件（不受 single_file 影响，保证映射完整）
+    all_files = collect_md_files(
+        config["source_paths"], base_dir,
+        exclude_files={cfg_path},
+        ignore_patterns=config.get("ignore_patterns", [])
+    )
+
+    # 筛选需要预创建的文件：无 dingding_link 且正文非空
+    new_files = []
+    for filepath in all_files:
+        fm, body = parse_frontmatter(filepath)
+        if not fm.get("dingding_link") and body.strip():
+            new_files.append(filepath)
+
+    if not new_files:
+        return True
+
+    print(f"\n📄 阶段二-B：预创建文档，获取钉钉链接 (共 {len(new_files)} 个新文件)")
+
+    for filepath in new_files:
+        rel = os.path.relpath(filepath, base_dir)
+        fm, body = parse_frontmatter(filepath)
+        title = get_doc_title(body, filepath)
+        target_node_id = find_target_folder(filepath, config)
+
+        if dry_run:
+            print(f"  [PRE-CREATE] {rel} → \"{title}\" — 将创建空文档")
+            continue
+
+        # 创建空文档
+        now_ts = now_iso8601()
+        empty_tmp = _write_temp_file("")
+        try:
+            result = create_doc(title, empty_tmp, target_node_id,
+                                workspace_id=ws_id, dry_run=False)
+        finally:
+            os.unlink(empty_tmp)
+
+        if result:
+            write_frontmatter(filepath, dingding_link=result["docUrl"],
+                              dingding_updated=now_ts)
+            print(f"  [PRE-CREATE] {rel} → \"{title}\" ({result['docUrl']})")
+        else:
+            print(f"  [PRE-CREATE] {rel} → ❌ 创建空文档失败")
+            # 不阻断流程，该文件在阶段三仍会走新建路径
+
+    return True
+
+
 def find_target_folder(filepath: str, config: dict) -> str:
     """根据文件路径找到对应的钉钉文件夹 node_id。"""
     base_dir = config["_base_dir"]
@@ -927,8 +1060,12 @@ def find_target_folder(filepath: str, config: dict) -> str:
 
 
 def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
-                  verbose: bool = False) -> tuple[str, dict]:
+                  verbose: bool = False,
+                  path_to_url: dict[str, str] = None) -> tuple[str, dict]:
     """同步单个文件。
+
+    Args:
+        path_to_url: 本地文件绝对路径 → 钉钉文档 URL 的映射，用于替换交叉引用。
 
     Returns:
         (status, img_stats) where status is "success" / "skip" / "fallback" / "failed"
@@ -947,6 +1084,13 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
     file_dir = os.path.dirname(os.path.abspath(filepath))
     images = discover_images(body, file_dir)
     clean_body = strip_images(body, images) if images else body
+
+    # ★ 交叉引用替换：将指向其他本地 .md 文件的链接替换为钉钉文档 URL
+    if path_to_url:
+        cross_refs = discover_cross_refs(clean_body)
+        if cross_refs:
+            clean_body = replace_cross_refs(clean_body, cross_refs,
+                                             path_to_url, file_dir)
 
     target_node_id = find_target_folder(filepath, config)
     title = get_doc_title(body, filepath)  # 标题仍用原始 body（不含占位标记）
@@ -1182,6 +1326,9 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
                           verbose: bool = False, single_file: str = None):
     """阶段三：执行文档同步。
 
+    此时所有文件的 dingding_link 已在阶段二-B 就绪，路径→URL 映射完整，
+    交叉引用可在上传内容时一次性解决。
+
     single_file: 若指定，则只同步该文件，跳过其余文件。
     """
     base_dir = config["_base_dir"]
@@ -1205,10 +1352,13 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
             print(f"   解析路径: {target_abs}")
             return
         files = matched
-        print(f"\n📄 阶段三：同步指定文件")
+        print(f"\n📄 阶段三：同步指定文件内容")
     else:
         total = len(files)
-        print(f"\n📄 阶段三：同步文档 (共 {total} 个文件)")
+        print(f"\n📄 阶段三：同步文档内容 (共 {total} 个文件)")
+
+    # ── 构建完整路径→URL 映射（阶段二-B 已为所有新文件预创建空文档）──
+    path_to_url = build_path_to_url_map(files)
 
     stats = {"success": 0, "skip": 0, "fallback": 0, "failed": 0}
     img_stats = {"success": 0, "failed": 0}
@@ -1217,7 +1367,8 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
     for filepath in files:
         rel = os.path.relpath(filepath, base_dir)
         status, img_st = sync_one_file(filepath, config, dry_run=dry_run,
-                                       verbose=verbose)
+                                       verbose=verbose,
+                                       path_to_url=path_to_url)
         stats[status] = stats.get(status, 0) + 1
         img_stats["success"] += img_st.get("success", 0)
         img_stats["failed"] += img_st.get("failed", 0)
@@ -1273,6 +1424,12 @@ def main():
     # 阶段二
     if not phase2_prepare_folders(config, dry_run=args.dry_run):
         sys.exit("❌ 阶段二失败，终止同步")
+
+    # 阶段二-B：预创建空文档，获取 dingding_link
+    if not phase2b_prepare_documents(config, dry_run=args.dry_run,
+                                      verbose=args.verbose,
+                                      single_file=args.single_file):
+        print("⚠️  阶段二-B 部分失败，继续执行")
 
     # 阶段三
     phase3_sync_documents(config, dry_run=args.dry_run, verbose=args.verbose,

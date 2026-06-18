@@ -278,7 +278,7 @@ def _setup_group_b_root_folder(workspace_id: str, folder_name: str) -> str:
 
 def _cleanup_group_a(workspace_id: str):
     """清理 Group A：删除知识库根目录下的测试文档及文件夹。"""
-    test_names = {"quickstart", "empty", "config"}
+    test_names = {"quickstart", "empty", "config", "cross-ref-hub", "cross-ref-api", "cross-ref-guide"}
     nodes = run_dws("doc", "list", "--workspace", workspace_id)
     to_delete = []
 
@@ -290,7 +290,10 @@ def _cleanup_group_a(workspace_id: str):
                 or name.startswith("用户接口")
                 or name.startswith("系统功能模块参考手册")
                 or name.startswith("图片测试文档")
-                or name.startswith("相对路径图片测试")):
+                or name.startswith("相对路径图片测试")
+                or name.startswith("交叉引用测试中心")
+                or name.startswith("API 交叉引用测试")
+                or name.startswith("指南交叉引用测试")):
             to_delete.append((n["nodeId"], name))
 
     for n in nodes.get("nodes", []):
@@ -329,13 +332,15 @@ class _TestSyncBase:
     # ── 1. Dry-run 预览 ──
 
     def test_01_dry_run(self, ctx):
-        """dry-run 模式：预览操作计划（含图片处理）。"""
+        """dry-run 模式：预览操作计划（含图片处理、交叉引用预创建）。"""
         r = run_sync(ctx["config_path"], "--dry-run")
         output, err = r.stdout, r.stderr
 
         assert_in("[DRY RUN]", output, "dry-run 标记", stderr=err)
         assert_in("阶段二", output, "阶段二标题", stderr=err)
         assert_in("阶段三", output, "阶段三标题", stderr=err)
+        # 阶段二-B 预创建 + 阶段三 创建
+        assert_in("[PRE-CREATE]", output, "预创建空文档", stderr=err)
         assert_in("[CREATE]", output, "新建操作", stderr=err)
 
         # dry-run 不应修改任何文件
@@ -351,18 +356,23 @@ class _TestSyncBase:
     # ── 2. 首次同步 ──
 
     def test_02_create_new_docs(self, ctx):
-        """首次同步：新建所有文档（含大文件分块），验证 frontmatter、空文档跳过、图片、配置回填。"""
+        """首次同步：阶段二-B 预创建空文档获取 dingding_link，阶段三更新实际内容。
+
+        验证 frontmatter、空文档跳过、图片处理、配置回填、交叉引用文件。
+        """
         r = run_sync(ctx["config_path"])
         output, err = r.stdout, r.stderr
 
-        # 操作标记
-        assert_in("[CREATE]", output, "新建操作", stderr=err)
+        # 阶段二-B 预创建空文档
+        assert_in("[PRE-CREATE]", output, "预创建空文档标记", stderr=err)
+        # 阶段三更新文档内容（因阶段二-B 已将 dingding_link 写入 frontmatter）
+        assert_in("[UPDATE]", output, "更新操作", stderr=err)
+        assert_in("[UPDATE-chunk]", output, "分块更新标记", stderr=err)
         assert_in("✅", output, "成功标记", stderr=err)
-        assert_not_in("[UPDATE]", output, "不应有更新", stderr=err)
 
         docs_dir = ctx["docs_dir"]
 
-        # 根目录文档
+        # ── 根目录文档 ──
         qs = os.path.join(docs_dir, "quickstart.md")
         assert_file_contains(qs, "dingding_link:", "quickstart.md 有 link")
         assert_file_contains(qs, "dingding_updated:", "quickstart.md 有 updated")
@@ -380,7 +390,23 @@ class _TestSyncBase:
         assert_file_contains(image_doc, "dingding_updated:", "image_doc.md 有 updated")
         assert_single_frontmatter(image_doc, "image_doc.md 无重复 fm")
 
-        # 子目录文档
+        # ── 交叉引用文件 ──
+        cr_hub = os.path.join(docs_dir, "cross-ref-hub.md")
+        assert_file_contains(cr_hub, "dingding_link:", "cross-ref-hub.md 有 link")
+        assert_file_contains(cr_hub, "dingding_updated:", "cross-ref-hub.md 有 updated")
+        assert_single_frontmatter(cr_hub, "cross-ref-hub.md 无重复 fm")
+
+        cr_api = os.path.join(ctx["api_dir"], "cross-ref-api.md")
+        assert_file_contains(cr_api, "dingding_link:", "cross-ref-api.md 有 link")
+        assert_file_contains(cr_api, "dingding_updated:", "cross-ref-api.md 有 updated")
+        assert_single_frontmatter(cr_api, "cross-ref-api.md 无重复 fm")
+
+        cr_guide = os.path.join(ctx["guide_dir"], "cross-ref-guide.md")
+        assert_file_contains(cr_guide, "dingding_link:", "cross-ref-guide.md 有 link")
+        assert_file_contains(cr_guide, "dingding_updated:", "cross-ref-guide.md 有 updated")
+        assert_single_frontmatter(cr_guide, "cross-ref-guide.md 无重复 fm")
+
+        # ── 子目录文档 ──
         ua = os.path.join(ctx["api_dir"], "用户接口.md")
         assert_file_contains(ua, "dingding_link:", "用户接口.md 有 link")
         assert_file_contains(ua, "dingding_updated:", "用户接口.md 有 updated")
@@ -454,6 +480,11 @@ class _TestSyncBase:
         assert_in("已有 node_id，跳过", output, "文件夹复用", stderr=err)
         assert_not_in("失败详情", output, "无失败详情", stderr=err)
         assert_in("❌ 0 失败", output, "失败计数为 0", stderr=err)
+
+        # 交叉引用文件在更新轮次后 frontmatter 仍完整
+        cr_hub = os.path.join(ctx["docs_dir"], "cross-ref-hub.md")
+        assert_file_contains(cr_hub, "dingding_link:", "更新后 cross-ref-hub.md 仍有 link")
+        assert_single_frontmatter(cr_hub, "更新后 cross-ref-hub.md 无重复 fm")
 
 
 # ═════════════════════════════════════════
