@@ -19,6 +19,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -32,6 +34,9 @@ import yaml
 CHUNK_SIZE_THRESHOLD = 9_000   # 字符数，超过此值触发分块
 MAX_CHUNK_SIZE = 9_000         # 每块最大 9000 字符（dws API 限制 10000 字符，留 10% 余量）
 CST = timezone(timedelta(hours=8))
+
+# 图片引用正则：匹配 ![alt](path)
+IMG_PATTERN = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
 
 def now_iso8601() -> str:
@@ -270,6 +275,34 @@ def is_doc_deleted_error(resp: dict) -> bool:
     """判断错误响应是否表示文档已被删除。"""
     error = resp.get("error", {})
     return error.get("message") == "workspace node has been recycled"
+
+
+def get_block_list(node_id: str, dry_run: bool = False) -> list[dict]:
+    """获取文档的 block 列表。
+
+    Returns:
+        [{blockType, element: {id: ..., paragraph: {text: ...}}}, ...]
+    """
+    args = ["doc", "block", "list", "--node", node_id, "--format", "json"]
+    resp = run_dws(args, dry_run=dry_run)
+    return resp.get("blocks", [])
+
+
+def insert_media(node_id: str, file_path: str, ref_block: str = None,
+                 where: str = None, dry_run: bool = False) -> dict:
+    """将图片/附件插入文档。返回完整响应 dict。"""
+    args = ["doc", "media", "insert", "--node", node_id,
+            "--file", file_path, "--format", "json"]
+    if ref_block and where:
+        args += ["--ref-block", ref_block, "--where", where]
+    return run_dws(args, dry_run=dry_run)
+
+
+def delete_block(node_id: str, block_id: str, dry_run: bool = False) -> dict:
+    """删除文档中的单个 block。"""
+    args = ["doc", "block", "delete", "--node", node_id,
+            "--block-id", block_id, "--yes", "--format", "json"]
+    return run_dws(args, dry_run=dry_run)
 
 
 # ────────────────────────────────────────────────────────────
@@ -599,8 +632,215 @@ def _hard_split(text: str, max_size: int) -> list[str]:
 
 
 # ────────────────────────────────────────────────────────────
-# 同步主流程
+# Image 模块
 # ────────────────────────────────────────────────────────────
+
+
+def discover_images(body: str, file_dir: str) -> list[dict]:
+    """扫描 body 中所有 ![]() 图片引用。
+
+    Args:
+        body: markdown 正文（不含 frontmatter）
+        file_dir: markdown 文件所在目录的绝对路径
+
+    Returns:
+        [{
+            "index": int,           # 序号
+            "alt": str,             # alt 文本
+            "raw": str,             # 原始 ![]() 字符串
+            "abs_path": str,        # 绝对路径（外部 URL 时保留原 URL）
+            "exists": bool,         # 本地文件是否存在（外部 URL 为 False）
+            "is_external": bool,    # 是否外部 URL
+            "placeholder": str,     # [IMG-PLACEHOLDER-N]
+        }, ...]
+    """
+    images = []
+    for i, m in enumerate(IMG_PATTERN.finditer(body)):
+        raw_path = m.group(2)
+        is_external = raw_path.startswith(("http://", "https://"))
+        abs_path = None
+        exists = False
+
+        if is_external:
+            abs_path = raw_path  # 保留原始 URL
+        else:
+            abs_path = os.path.normpath(os.path.join(file_dir, raw_path))
+            exists = os.path.isfile(abs_path)
+
+        images.append({
+            "index": i,
+            "alt": m.group(1),
+            "raw": m.group(0),
+            "abs_path": abs_path,
+            "exists": exists,
+            "is_external": is_external,
+            "placeholder": f"[IMG-PLACEHOLDER-{i}]",
+        })
+    return images
+
+
+def strip_images(body: str, images: list[dict]) -> str:
+    """将 body 中的 ![]() 替换为 HTML 注释占位符。"""
+    cleaned = body
+    for img in images:
+        cleaned = cleaned.replace(img["raw"], img["placeholder"])
+    return cleaned
+
+
+def download_image(url: str) -> Optional[str]:
+    """下载外部图片到临时文件。成功返回文件路径，失败返回 None。"""
+    parsed = urllib.parse.urlparse(url)
+    ext = os.path.splitext(parsed.path)[1] or ".png"
+    fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="ddsync_img_")
+    os.close(fd)
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; dd-sync/1.0)"
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            with open(tmp_path, "wb") as f:
+                f.write(resp.read())
+        return tmp_path
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return None
+
+
+def find_block_by_text(blocks: list[dict], text: str) -> Optional[str]:
+    """在 block 列表中查找包含指定文本的 block，返回其 id。"""
+    for b in blocks:
+        try:
+            blockType = b.get("blockType")
+            if blockType != "paragraph":
+                continue
+            elem = b.get("element") or {}
+            paragraph = elem.get("paragraph") or {}
+            block_text = paragraph.get("text", "")
+            if block_text and text in block_text:
+                return elem["id"]
+        except (KeyError, TypeError, AttributeError):
+            continue
+    return None
+
+
+def insert_images(node_id: str, images: list[dict],
+                  dry_run: bool = False, verbose: bool = False) -> dict:
+    """将图片上传到文档中，成功则删除占位标记。
+
+    Returns:
+        {"success": int, "failed": int}
+    """
+    if dry_run:
+        for img in images:
+            tag = "[IMG]" if not img["is_external"] else "[IMG-ext]"
+            print(f"    {tag} {img['abs_path']} → 将插入到 {img['placeholder']} 之后")
+        return {"success": len(images), "failed": 0}
+
+    stats = {"success": 0, "failed": 0}
+
+    # 一次性获取 block 列表，整个循环复用
+    blocks = get_block_list(node_id, dry_run=False)
+
+    for img in images:
+        tmp_file = None
+
+        # ── 步骤 1：定位占位标记 ──
+        ref_block_id = find_block_by_text(blocks, img["placeholder"])
+        if not ref_block_id:
+            _log_img_error(img, f"找不到占位标记: {img['placeholder']}", verbose)
+            stats["failed"] += 1
+            continue
+
+        # ── 步骤 2：准备本地文件（下载外部 URL 或验证本地文件）──
+        if img["is_external"]:
+            tmp_file = download_image(img["abs_path"])
+            if tmp_file is None:
+                _insert_img_fallback(node_id, ref_block_id, img, dry_run)
+                _log_img_error(img, f"外部 URL 下载失败: {img['abs_path']}", verbose)
+                stats["failed"] += 1
+                continue
+            local_file = tmp_file
+        else:
+            if not img["exists"]:
+                _insert_img_fallback(node_id, ref_block_id, img, dry_run)
+                _log_img_error(img, f"本地文件不存在: {img['abs_path']}", verbose)
+                stats["failed"] += 1
+                continue
+            local_file = img["abs_path"]
+
+        # ── 步骤 3：执行 media insert ──
+        resp = insert_media(node_id, local_file,
+                            ref_block=ref_block_id, where="after",
+                            dry_run=False)
+        if not resp.get("success"):
+            err_msg = resp.get("error", {}).get("message", str(resp)[:200])
+            _log_img_error(img, f"media insert 失败: {err_msg}", verbose)
+            stats["failed"] += 1
+            # 清理临时文件
+            if tmp_file:
+                try:
+                    os.unlink(tmp_file)
+                except OSError:
+                    pass
+            continue
+
+        # ── 步骤 4：删除占位标记 ──
+        if verbose:
+            print(f"    [IMG] {img['abs_path']} → ✅")
+        del_resp = delete_block(node_id, ref_block_id, dry_run=False)
+        if not del_resp.get("success"):
+            _log_img_error(img, "占位标记删除失败（图片已成功上传）", verbose)
+        stats["success"] += 1
+
+        # ── 步骤 5：清理临时文件 ──
+        if tmp_file:
+            try:
+                os.unlink(tmp_file)
+            except OSError:
+                pass
+
+    return stats
+
+
+def _log_img_error(img: dict, reason: str, verbose: bool):
+    """打印图片处理错误日志（程序层面，不操作钉钉文档）。"""
+    if verbose:
+        print(f"    ⚠️  {img['abs_path']} — {reason}")
+
+
+def _insert_img_fallback(node_id: str, ref_block_id: str, img: dict,
+                          dry_run: bool):
+    """文件缺失时在 ref_block 之后插入错误信息块，便于读者发现缺失图片。
+
+    通过 dws doc block insert --type blockquote 精确插入到占位标记之后。
+    """
+    if dry_run:
+        print(f"    [IMG-FALLBACK] {img['abs_path']} → 将在 ref_block 之后插入错误信息")
+        return
+
+    text = (
+        f"⚠️ 图片缺失\n"
+        f"原始引用: {img['raw']}"
+    )
+
+    args = [
+        "doc", "block", "insert",
+        "--type", "blockquote",
+        "--text", text,
+        "--node", node_id,
+        "--ref-block", ref_block_id,
+        "--where", "after",
+        "--format", "json",
+        "--yes",
+    ]
+    run_dws(args, dry_run=False)
+
+
+
 
 def phase2_prepare_folders(config: dict, dry_run: bool = False):
     """阶段二：准备钉钉文件夹结构。
@@ -687,8 +927,13 @@ def find_target_folder(filepath: str, config: dict) -> str:
 
 
 def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
-                  verbose: bool = False) -> str:
-    """同步单个文件。返回状态："success" / "skip" / "fallback" / "failed"。"""
+                  verbose: bool = False) -> tuple[str, dict]:
+    """同步单个文件。
+
+    Returns:
+        (status, img_stats) where status is "success" / "skip" / "fallback" / "failed"
+        and img_stats is {"success": int, "failed": int} (empty dict if no images).
+    """
     rel_path = os.path.relpath(filepath, config["_base_dir"])
     fm, body = parse_frontmatter(filepath)
 
@@ -696,11 +941,16 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
     if not body.strip():
         if verbose:
             print(f"  [SKIP] {rel_path} — 正文为空")
-        return "skip"
+        return "skip", {}
+
+    # ★ 图片发现与正文清理
+    file_dir = os.path.dirname(os.path.abspath(filepath))
+    images = discover_images(body, file_dir)
+    clean_body = strip_images(body, images) if images else body
 
     target_node_id = find_target_folder(filepath, config)
-    title = get_doc_title(body, filepath)
-    content_size = len(body)
+    title = get_doc_title(body, filepath)  # 标题仍用原始 body（不含占位标记）
+    content_size = len(clean_body)
     ws_id = config["knowledge_base"]["workspace_id"]
 
     # 根据大小决定是否分块
@@ -708,12 +958,26 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
 
     if "dingding_link" in fm and fm["dingding_link"]:
         # ── 更新已有文档 ──
-        return _sync_update(filepath, rel_path, fm, body, title, target_node_id,
-                            use_chunking, ws_id, dry_run, verbose)
+        status, node_id = _sync_update(filepath, rel_path, fm, clean_body,
+                                       title, target_node_id,
+                                       use_chunking, ws_id, dry_run, verbose)
     else:
         # ── 新建文档 ──
-        return _sync_create(filepath, rel_path, body, title, target_node_id,
-                            use_chunking, ws_id, dry_run, verbose)
+        status, node_id = _sync_create(filepath, rel_path, clean_body,
+                                       title, target_node_id,
+                                       use_chunking, ws_id, dry_run, verbose)
+
+    # ★ 文档写入完成后，上传图片并清理占位标记
+    img_stats = {"success": 0, "failed": 0}
+    if status in ("success", "fallback") and images:
+        if dry_run:
+            img_stats = insert_images("DRY_RUN", images, dry_run=True,
+                                      verbose=verbose)
+        elif node_id:
+            img_stats = insert_images(node_id, images, dry_run=False,
+                                      verbose=verbose)
+
+    return status, img_stats
 
 
 def _write_temp_file(content: str) -> str:
@@ -727,14 +991,18 @@ def _write_temp_file(content: str) -> str:
 
 def _sync_create(filepath: str, rel_path: str, body: str, title: str,
                  target_node_id: str, use_chunking: bool,
-                 ws_id: str, dry_run: bool, verbose: bool) -> str:
-    """新建文档逻辑。"""
+                 ws_id: str, dry_run: bool, verbose: bool) -> tuple[str, Optional[str]]:
+    """新建文档逻辑。
+
+    Returns:
+        (status, node_id_or_none)
+    """
     now_ts = now_iso8601()
 
     if dry_run:
         tag = "[CREATE-chunk]" if use_chunking else "[CREATE]"
         print(f"  {tag} {rel_path} → \"{title}\"")
-        return "success"
+        return "success", None
 
     if not use_chunking:
         tmp_path = _write_temp_file(body)
@@ -748,10 +1016,10 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
             write_frontmatter(filepath, dingding_link=result["docUrl"],
                               dingding_updated=now_ts)
             print(f"  [CREATE] {rel_path} → \"{title}\" ({result['docUrl']})")
-            return "success"
+            return "success", result["nodeId"]
         else:
             print(f"  [CREATE] {rel_path} → ❌ 创建失败")
-            return "failed"
+            return "failed", None
 
     # 分块创建
     chunks = split_content(body)
@@ -760,23 +1028,27 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
         write_frontmatter(filepath, dingding_link=result["docUrl"],
                           dingding_updated=now_ts)
         print(f"  [CREATE-chunk] {rel_path} → \"{title}\" ({result['docUrl']}, {len(chunks)} 片)")
-        return "success"
+        return "success", result.get("nodeId", result.get("docUrl"))
     else:
         print(f"  [CREATE-chunk] {rel_path} → ❌ 分块创建失败")
-        return "failed"
+        return "failed", None
 
 
 def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
                  target_node_id: str, use_chunking: bool,
-                 ws_id: str, dry_run: bool, verbose: bool) -> str:
-    """更新已有文档逻辑。"""
+                 ws_id: str, dry_run: bool, verbose: bool) -> tuple[str, Optional[str]]:
+    """更新已有文档逻辑。
+
+    Returns:
+        (status, node_id_or_none)
+    """
     now_ts = now_iso8601()
     doc_link = fm["dingding_link"]
 
     if dry_run:
         tag = "[UPDATE-chunk]" if use_chunking else "[UPDATE]"
         print(f"  {tag} {rel_path} → \"{title}\"")
-        return "success"
+        return "success", None
 
     if not use_chunking:
         tmp_path = _write_temp_file(body)
@@ -788,7 +1060,7 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
         if resp.get("success"):
             write_frontmatter(filepath, dingding_updated=now_ts)
             print(f"  [UPDATE] {rel_path} → \"{title}\" (已更新)")
-            return "success"
+            return "success", resp.get("nodeId", doc_link)
         elif is_doc_deleted_error(resp):
             # 降级为新建（需要重新写临时文件，因为之前的已被 unlink）
             print(f"  [UPDATE] {rel_path} → ⚠️ 文档已删除，降级为新建")
@@ -803,13 +1075,13 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
                                   dingding_link=new_result["docUrl"],
                                   dingding_updated=now_ts)
                 print(f"    ✅ 重建成功 ({new_result['docUrl']})")
-                return "fallback"
+                return "fallback", new_result["nodeId"]
             else:
                 print(f"    ❌ 重建失败")
-                return "failed"
+                return "failed", None
         else:
             print(f"  [UPDATE] {rel_path} → ❌ 更新失败")
-            return "failed"
+            return "failed", None
 
     # 分块更新
     chunks = split_content(body)
@@ -817,7 +1089,7 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
     if update_resp is True:
         write_frontmatter(filepath, dingding_updated=now_ts)
         print(f"  [UPDATE-chunk] {rel_path} → \"{title}\" (已更新, {len(chunks)} 片)")
-        return "success"
+        return "success", doc_link
     elif isinstance(update_resp, dict) and is_doc_deleted_error(update_resp):
         # 文档已删除，降级为分块新建
         print(f"  [UPDATE-chunk] {rel_path} → ⚠️ 文档已删除，降级为分块新建")
@@ -827,13 +1099,13 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
                               dingding_link=new_result["docUrl"],
                               dingding_updated=now_ts)
             print(f"    ✅ 分块重建成功 ({new_result['docUrl']})")
-            return "fallback"
+            return "fallback", new_result.get("nodeId", new_result.get("docUrl"))
         else:
             print(f"    ❌ 分块重建失败")
-            return "failed"
+            return "failed", None
     else:
         print(f"  [UPDATE-chunk] {rel_path} → ❌ 分块更新失败")
-        return "failed"
+        return "failed", None
 
 
 def _chunked_create(title: str, chunks: list[str],
@@ -868,7 +1140,7 @@ def _chunked_create(title: str, chunks: list[str],
         finally:
             os.unlink(tmp)
 
-    return {"docUrl": doc_url}
+    return {"nodeId": node_id, "docUrl": doc_url}
 
 
 def _chunked_update(doc_link: str, chunks: list[str]):
@@ -939,12 +1211,16 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
         print(f"\n📄 阶段三：同步文档 (共 {total} 个文件)")
 
     stats = {"success": 0, "skip": 0, "fallback": 0, "failed": 0}
+    img_stats = {"success": 0, "failed": 0}
     failed_details = []
 
     for filepath in files:
         rel = os.path.relpath(filepath, base_dir)
-        status = sync_one_file(filepath, config, dry_run=dry_run, verbose=verbose)
+        status, img_st = sync_one_file(filepath, config, dry_run=dry_run,
+                                       verbose=verbose)
         stats[status] = stats.get(status, 0) + 1
+        img_stats["success"] += img_st.get("success", 0)
+        img_stats["failed"] += img_st.get("failed", 0)
 
         if status == "failed":
             failed_details.append(rel)
@@ -955,6 +1231,8 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
           f"⚠️ {stats['fallback']} 降级   "
           f"⏭️ {stats['skip']} 跳过   "
           f"❌ {stats['failed']} 失败")
+    if img_stats["success"] > 0 or img_stats["failed"] > 0:
+        print(f"图片: ✅ {img_stats['success']} 插入   ⚠️ {img_stats['failed']} 失败")
     if failed_details:
         print("失败详情:")
         for fd in failed_details:

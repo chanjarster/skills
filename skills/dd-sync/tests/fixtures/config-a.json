@@ -1,0 +1,28 @@
+{
+  "version": "1",
+  "source_paths": ["docs/"],
+  "knowledge_base": {
+    "name": "测试知识库-GroupA",
+    "workspace_id": "{{WORKSPACE_ID}}"
+  },
+  "root_folder": {
+    "name": "",
+    "node_id": "",
+    "doc_url": "",
+    "comment": "Group A: 无 root_folder，文档上传到知识库根目录"
+  },
+  "folder_mapping": [
+    {
+      "local_dir": "docs/api",
+      "dingtalk_folder_name": "API文档",
+      "node_id": "",
+      "doc_url": ""
+    },
+    {
+      "local_dir": "docs/guide",
+      "dingtalk_folder_name": "开发指南",
+      "node_id": "",
+      "doc_url": ""
+    }
+  ]
+}
