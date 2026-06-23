@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,11 @@ def now_iso8601() -> str:
     # strftime %z 输出 +0800，插入冒号变为 +08:00
     tz_formatted = tz_str[:3] + ":" + tz_str[3:]
     return now.strftime("%Y-%m-%dT%H:%M:%S") + tz_formatted
+
+
+def compute_body_hash(body: str) -> str:
+    """计算正文（不含 frontmatter）的 SHA256 哈希值。"""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 # ────────────────────────────────────────────────────────────
@@ -342,8 +348,9 @@ def parse_frontmatter(filepath: str) -> tuple[dict, str]:
 
 
 def write_frontmatter(filepath: str, dingding_link: str = None,
-                      dingding_updated: str = None):
-    """原地更新文件的 frontmatter，只修改 dingding_link / dingding_updated。
+                      dingding_updated: str = None,
+                      dingding_content_hash: str = None):
+    """原地更新文件的 frontmatter，只修改 dingding_link / dingding_updated / dingding_content_hash。
 
     其他字段原样保留。无 frontmatter 则在文件头创建。
     """
@@ -355,6 +362,8 @@ def write_frontmatter(filepath: str, dingding_link: str = None,
         updates["dingding_link"] = dingding_link
     if dingding_updated is not None:
         updates["dingding_updated"] = dingding_updated
+    if dingding_content_hash is not None:
+        updates["dingding_content_hash"] = dingding_content_hash
 
     if not content.startswith("---"):
         # 无 frontmatter，创建
@@ -1100,16 +1109,28 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
     # 根据大小决定是否分块
     use_chunking = content_size > CHUNK_SIZE_THRESHOLD
 
+    # ★ 计算正文哈希，用于增量同步判断
+    body_hash = compute_body_hash(body)
+
     if "dingding_link" in fm and fm["dingding_link"]:
+        # ── 检查内容是否变化 ──
+        cached_hash = fm.get("dingding_content_hash")
+        if cached_hash and cached_hash == body_hash:
+            if verbose:
+                print(f"  [SKIP] {rel_path} — 内容未变化")
+            return "skip", {}
+
         # ── 更新已有文档 ──
         status, node_id = _sync_update(filepath, rel_path, fm, clean_body,
                                        title, target_node_id,
-                                       use_chunking, ws_id, dry_run, verbose)
+                                       use_chunking, ws_id, dry_run, verbose,
+                                       body_hash=body_hash)
     else:
         # ── 新建文档 ──
         status, node_id = _sync_create(filepath, rel_path, clean_body,
                                        title, target_node_id,
-                                       use_chunking, ws_id, dry_run, verbose)
+                                       use_chunking, ws_id, dry_run, verbose,
+                                       body_hash=body_hash)
 
     # ★ 文档写入完成后，上传图片并清理占位标记
     img_stats = {"success": 0, "failed": 0}
@@ -1135,7 +1156,8 @@ def _write_temp_file(content: str) -> str:
 
 def _sync_create(filepath: str, rel_path: str, body: str, title: str,
                  target_node_id: str, use_chunking: bool,
-                 ws_id: str, dry_run: bool, verbose: bool) -> tuple[str, Optional[str]]:
+                 ws_id: str, dry_run: bool, verbose: bool,
+                 body_hash: str = None) -> tuple[str, Optional[str]]:
     """新建文档逻辑。
 
     Returns:
@@ -1158,7 +1180,8 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
 
         if result:
             write_frontmatter(filepath, dingding_link=result["docUrl"],
-                              dingding_updated=now_ts)
+                              dingding_updated=now_ts,
+                              dingding_content_hash=body_hash)
             print(f"  [CREATE] {rel_path} → \"{title}\" ({result['docUrl']})")
             return "success", result["nodeId"]
         else:
@@ -1170,7 +1193,8 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
     result = _chunked_create(title, chunks, target_node_id, ws_id)
     if result:
         write_frontmatter(filepath, dingding_link=result["docUrl"],
-                          dingding_updated=now_ts)
+                          dingding_updated=now_ts,
+                          dingding_content_hash=body_hash)
         print(f"  [CREATE-chunk] {rel_path} → \"{title}\" ({result['docUrl']}, {len(chunks)} 片)")
         return "success", result.get("nodeId", result.get("docUrl"))
     else:
@@ -1180,7 +1204,8 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
 
 def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
                  target_node_id: str, use_chunking: bool,
-                 ws_id: str, dry_run: bool, verbose: bool) -> tuple[str, Optional[str]]:
+                 ws_id: str, dry_run: bool, verbose: bool,
+                 body_hash: str = None) -> tuple[str, Optional[str]]:
     """更新已有文档逻辑。
 
     Returns:
@@ -1202,7 +1227,8 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
             os.unlink(tmp_path)
 
         if resp.get("success"):
-            write_frontmatter(filepath, dingding_updated=now_ts)
+            write_frontmatter(filepath, dingding_updated=now_ts,
+                              dingding_content_hash=body_hash)
             print(f"  [UPDATE] {rel_path} → \"{title}\" (已更新)")
             return "success", resp.get("nodeId", doc_link)
         elif is_doc_deleted_error(resp):
@@ -1217,7 +1243,8 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
             if new_result:
                 write_frontmatter(filepath,
                                   dingding_link=new_result["docUrl"],
-                                  dingding_updated=now_ts)
+                                  dingding_updated=now_ts,
+                                  dingding_content_hash=body_hash)
                 print(f"    ✅ 重建成功 ({new_result['docUrl']})")
                 return "fallback", new_result["nodeId"]
             else:
@@ -1231,7 +1258,8 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
     chunks = split_content(body)
     update_resp = _chunked_update(doc_link, chunks)
     if update_resp is True:
-        write_frontmatter(filepath, dingding_updated=now_ts)
+        write_frontmatter(filepath, dingding_updated=now_ts,
+                          dingding_content_hash=body_hash)
         print(f"  [UPDATE-chunk] {rel_path} → \"{title}\" (已更新, {len(chunks)} 片)")
         return "success", doc_link
     elif isinstance(update_resp, dict) and is_doc_deleted_error(update_resp):
@@ -1241,7 +1269,8 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
         if new_result:
             write_frontmatter(filepath,
                               dingding_link=new_result["docUrl"],
-                              dingding_updated=now_ts)
+                              dingding_updated=now_ts,
+                              dingding_content_hash=body_hash)
             print(f"    ✅ 分块重建成功 ({new_result['docUrl']})")
             return "fallback", new_result.get("nodeId", new_result.get("docUrl"))
         else:

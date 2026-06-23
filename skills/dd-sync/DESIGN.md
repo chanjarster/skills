@@ -95,6 +95,83 @@ skills/dd-sync/
         └── frontmatter.md
 ```
 
+### 4.0 主要步骤流程图
+
+```mermaid
+graph TB
+    subgraph 启动
+        A[CLI 入口 argparse] --> B[load_config 加载配置]
+        B --> C{配置校验}
+        C -->|失败| C1[❌ 退出]
+    end
+
+    subgraph 阶段二
+        C -->|通过| D[phase2_prepare_folders]
+        D --> E[确保 root_folder]
+        E --> F[遍历 folder_mapping]
+        F --> G[只为有文件的目录创建文件夹]
+        G --> H[save_config 回填 node_id]
+    end
+
+    subgraph 阶段二-B
+        H --> I[phase2b_prepare_documents]
+        I --> J[收集所有 .md 文件]
+        J --> K{无 dingding_link<br/>且正文非空?}
+        K -->|是| K1[创建空文档 → 写回 dingding_link]
+        K -->|否| K2[跳过]
+    end
+
+    subgraph 阶段三
+        K1 --> L[phase3_sync_documents]
+        K2 --> L
+        L --> M[构建 path_to_url 交叉引用映射]
+        M --> N[遍历每个文件 sync_one_file]
+        N --> O{正文为空?}
+        O -->|是| O1[(SKIP)]
+        O -->|否| P[发现图片 / 交叉引用替换]
+        P --> Q[计算 body_hash]
+        Q --> R{有 dingding_link?}
+        R -->|否| S[_sync_create 新建]
+        S --> S1[创建文档 / 分块创建]
+        S1 --> S2{创建成功?}
+        S2 -->|否| S3[❌ 失败]
+        R -->|是| T{body_hash == 缓存?}
+        T -->|相同| T1[(SKIP 内容未变化)]
+        T -->|不同/无缓存| U[_sync_update 更新]
+        U --> U1{内容大小?}
+        U1 -->|≤9000| U2[overwrite 单次覆盖]
+        U1 -->|>9000| U3[chunked_update 分块]
+        U2 --> U4{更新结果?}
+        U3 --> U4
+        U4 -->|成功| U5[写回 dingding_updated + hash]
+        U4 -->|文档已删除| U6[降级新建]
+        U4 -->|其他失败| U7[❌ 失败]
+    end
+
+    subgraph 图片处理
+        S2 -->|是| V[insert_images 上传图片]
+        U5 --> V
+        U6 --> V
+        V --> W[逐张查找占位标记]
+        W --> X[media insert 插入图片]
+        X --> Y[delete_block 清理占位]
+    end
+
+    subgraph 结果
+        Y --> Z[汇总报告: 成功/跳过/降级/失败]
+        S3 -.-> Z
+        U7 -.-> Z
+        O1 -.-> Z
+        T1 -.-> Z
+    end
+
+    style C1 fill:#f96,stroke:#333
+    style S3 fill:#f96,stroke:#333
+    style U7 fill:#f96,stroke:#333
+    style O1 fill:#ffd700,stroke:#333
+    style T1 fill:#ffd700,stroke:#333
+```
+
 ### 4.1 依赖
 
 - **Python** ≥ 3.9
