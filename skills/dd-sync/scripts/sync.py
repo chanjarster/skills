@@ -481,59 +481,6 @@ def _is_table_separator(line: str) -> bool:
     return bool(re.match(r'^[\s\-:|]+$', inner)) and '-' in inner
 
 
-def _protect_tables(content: str) -> tuple[str, dict[str, str]]:
-    """将 markdown 表格替换为占位符，防止分片时切断表格结构。
-
-    表格在钉钉文档中必须保持完整才能正常渲染，分片切断表格会导致
-    表格无法显示。此函数在分片前将完整表格块替换为占位符。
-
-    Returns:
-        (masked_content, table_placeholders) 占位符 → 原始表格内容 的映射
-    """
-    lines = content.split('\n')
-    result_lines = []
-    placeholders: dict[str, str] = {}
-    placeholder_idx = 0
-    i = 0
-
-    while i < len(lines):
-        # 检测表格头部：当前行是表格行 且 下一行是分隔行
-        if (_is_table_row(lines[i]) and
-                i + 1 < len(lines) and
-                _is_table_separator(lines[i + 1])):
-
-            # 收集整个表格块（表头 + 分隔行 + 数据行）
-            table_lines = [lines[i], lines[i + 1]]
-            j = i + 2
-            while j < len(lines) and _is_table_row(lines[j]):
-                table_lines.append(lines[j])
-                j += 1
-
-            # 替换为占位符
-            placeholder = f'__TABLE_PLACEHOLDER_{placeholder_idx}__'
-            placeholders[placeholder] = '\n'.join(table_lines)
-            result_lines.append(placeholder)
-            placeholder_idx += 1
-            i = j
-        else:
-            result_lines.append(lines[i])
-            i += 1
-
-    return '\n'.join(result_lines), placeholders
-
-
-def _restore_tables(content: str, placeholders: dict[str, str]) -> str:
-    """还原表格占位符为优化后的表格内容。
-
-    还原前对每个表格执行瘦身优化：去除对齐用的冗余空格和多余分隔线字符，
-    在不改变 markdown 语义的前提下减小表格体积。
-    """
-    for placeholder, original in placeholders.items():
-        optimized = _optimize_table(original)
-        content = content.replace(placeholder, optimized)
-    return content
-
-
 def _normalize_separator_cell(cell: str) -> str:
     """规范化分隔行单元格：保留对齐冒号，压缩 --- 序列到最小值。
 
@@ -586,381 +533,212 @@ def _optimize_table(table_text: str) -> str:
     return '\n'.join(result)
 
 
-def _mask_headings_in_code_blocks(content: str, heading_prefix: str) -> tuple[str, dict]:
-    """将代码块中以 heading_prefix 开头的行替换为占位符，避免被误切。
+def split_content(content: str, max_chunk_size: int = MAX_CHUNK_SIZE,
+                  label: str = "") -> list[str]:
+    """按 markdown 块切分内容。
+
+    策略：
+    1. 拆分为原子块：代码块、表格、blockquote → 不可分割
+       其余文本按段落边界（≥2 个连续换行符）切分
+    2. 压缩表格（去除冗余空格）
+    3. 超限检查：text 块按行二次切分；原子块超限不切，打日志
+    4. 合并相邻 chunk（≤ max_chunk_size）以提高上传效率
 
     Args:
-        content: 原始 markdown 内容
-        heading_prefix: 要保护的标题前缀，如 "## " 或 "### "
+        content: 原始 markdown 正文
+        max_chunk_size: 每个 chunk 的字符数上限
+        label: 可选标签（如文件相对路径），用于超限警告日志
 
     Returns:
-        (masked_content, placeholder_map)
-    """
-    lines = content.split('\n')
-    result_lines = []
-    in_code_block = False
-    placeholder_idx = 0
-    placeholders: dict[str, str] = {}
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('```'):
-            in_code_block = not in_code_block
-            result_lines.append(line)
-            continue
-
-        if in_code_block and line.startswith(heading_prefix):
-            placeholder = f'__HEADING_PLACEHOLDER_{placeholder_idx}__'
-            placeholders[placeholder] = line
-            result_lines.append(placeholder)
-            placeholder_idx += 1
-        else:
-            result_lines.append(line)
-
-    return '\n'.join(result_lines), placeholders
-
-
-def _unmask_headings(content: str, placeholders: dict[str, str]) -> str:
-    """还原占位符为原始代码块行。"""
-    for placeholder, original in placeholders.items():
-        content = content.replace(placeholder, original)
-    return content
-
-
-def split_content(content: str, max_chunk_size: int = MAX_CHUNK_SIZE) -> list[str]:
-    """按 markdown 标题边界分块。
-
-    优先级：H2 → H3 → 空行 → 硬切。
-    保证不切断代码块和表格。
-
-    表格保护采用 占位→分块→还原→重切 四步策略：
-    1. 将表格替换为短占位符，防止分块时切断表格
-    2. 基于占位符长度按标题边界切分
-    3. 还原占位符为真实表格内容
-    4. 后处理：对还原后超限的 chunk 按 代码块/表格/标题 重新切分
-       代码块和表格作为独立 chunk（宁超限不断表/不断代码块）
+        chunk 列表，每个 chunk ≤ max_chunk_size（原子块除外）
     """
     if len(content) <= max_chunk_size:
         return [content]
 
-    # ★ 保护表格：将完整表格块替换为占位符，防止分片切断表格
-    table_masked, table_placeholders = _protect_tables(content)
+    # ── Step 1: 拆分为类型化块 ──
+    typed_blocks = _split_into_markdown_blocks(content)
 
-    # 保护代码块中的 H2 标题不被误切
-    masked, heading_placeholders = _mask_headings_in_code_blocks(table_masked, '## ')
+    # ── Step 2 & 3: 压缩表格 + 超限检查 + 二次切分 ──
+    chunks: list[tuple[str, str]] = []
+    for block_type, block_text in typed_blocks:
+        # 压缩表格
+        if block_type == 'table':
+            block_text = _optimize_table(block_text)
 
-    chunks = []
-    # 用 H2 作为首选切分点
-    sections = re.split(r"(?=^## )", masked, flags=re.MULTILINE)
-    current = ""
-
-    for section in sections:
-        if len(current) + len(section) > max_chunk_size:
-            if current:
-                chunks.append(current)
-            # section 自身可能也超大，立即拆分
-            if len(section) > max_chunk_size:
-                chunks.extend(_split_oversized(section, max_chunk_size))
-                current = ""
-            else:
-                current = section
+        if len(block_text) <= max_chunk_size:
+            if block_text.strip():
+                chunks.append((block_type, block_text))
+        elif block_type in ('table', 'code', 'blockquote'):
+            # 原子块超限不切，保持完整
+            if block_text.strip():
+                chunks.append((block_type, block_text))
+            if label:
+                name = {'table': '表格', 'code': '代码块',
+                        'blockquote': '引用块'}[block_type]
+                print(f"  ⚠️  {label}: {name} 超限 "
+                      f"({len(block_text)} > {max_chunk_size})，保持完整不切分")
         else:
-            current += section
+            # text 块超限：按行二次切分
+            for sub in _split_text_by_lines(block_text, max_chunk_size):
+                if sub.strip():
+                    chunks.append(('text', sub))
 
-    if current:
-        chunks.extend(_split_oversized(current, max_chunk_size))
-
-    # 还原代码块中的占位符
-    if heading_placeholders:
-        chunks = [_unmask_headings(c, heading_placeholders) for c in chunks]
-
-    # ★ 还原表格占位符
-    if table_placeholders:
-        chunks = [_restore_tables(c, table_placeholders) for c in chunks]
-
-    # ★ 后处理：对可能超限的 chunk（含还原后暴涨的表格）重新切分
-    # 代码块和表格作为独立 chunk 保持完整（宁超限不断表/不断代码块）
-    chunks = _rechunk_oversized(chunks, max_chunk_size)
+    # ── Step 4: 合并相邻 chunk ──
+    chunks = _merge_adjacent_chunks(chunks, max_chunk_size)
 
     return chunks
 
 
-def _split_oversized(text: str, max_size: int) -> list[str]:
-    """将超大块进一步按 H3 切分，仍太大则按段落边界切。"""
-    if len(text) <= max_size:
-        return [text]
+def _split_into_markdown_blocks(content: str) -> list[tuple[str, str]]:
+    """将 markdown 内容拆分为类型化块。
 
-    # 保护代码块中的 H3 标题不被误切
-    masked, placeholders = _mask_headings_in_code_blocks(text, '### ')
+    识别以下不可分割的原子块：
+    - 'code':       围栏代码块（``` ... ```）
+    - 'table':      markdown 表格
+    - 'blockquote': 引用块（连续 > 开头行）
 
-    result = []
-    # H3 切分
-    sub_sections = re.split(r"(?=^### )", masked, flags=re.MULTILINE)
-    current = ""
-    for sub in sub_sections:
-        if len(current) + len(sub) > max_size:
-            if current:
-                result.extend(_split_by_paragraph(current, max_size))
-            # sub 自身可能也超大，立即拆分
-            if len(sub) > max_size:
-                result.extend(_split_by_paragraph(sub, max_size))
-                current = ""
-            else:
-                current = sub
-        else:
-            current += sub
-    if current:
-        result.extend(_split_by_paragraph(current, max_size))
-
-    # 还原代码块中的占位符
-    if placeholders:
-        result = [_unmask_headings(r, placeholders) for r in result]
-
-    return result
-
-
-def _split_by_paragraph(text: str, max_size: int) -> list[str]:
-    """按空行（段落边界）切分，避免切断代码块和表格。
-
-    单段落仍超大时按行切分，单行仍超大时硬切（字符级）。
-    """
-    if len(text) <= max_size:
-        return [text]
-
-    result = []
-    # 按空行切分成段落组
-    paragraphs = re.split(r"(\n\n+)", text)
-    current = ""
-    in_code_block = False
-
-    for para in paragraphs:
-        if para.startswith("```"):
-            in_code_block = not in_code_block
-
-        if in_code_block:
-            current += para
-            continue
-
-        if len(current) + len(para) > max_size and current.strip():
-            result.extend(_hard_split(current, max_size))
-            current = para
-        else:
-            current += para
-
-    if current.strip():
-        result.extend(_hard_split(current, max_size))
-
-    return result
-
-
-def _hard_split(text: str, max_size: int) -> list[str]:
-    """最后手段：按行切分，单行仍超大则字符级硬切。保证不切断代码块。"""
-    if len(text) <= max_size:
-        return [text]
-
-    result = []
-    lines = text.split('\n')
-    current = ""
-    in_code_block = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        # 代码块保护：整体保留，不在内部切分
-        if stripped.startswith('```'):
-            in_code_block = not in_code_block
-            if in_code_block:
-                # 进入代码块：先输出当前累积的文本
-                candidate = current + '\n' + line if current else line
-                if len(candidate) > max_size and current:
-                    result.append(current)
-                    current = line
-                else:
-                    current = candidate
-            else:
-                # 退出代码块：追加结束标记
-                current += '\n' + line
-            continue
-
-        if in_code_block:
-            current += '\n' + line
-            continue
-
-        # 单行超大：字符级硬切
-        if len(line) > max_size:
-            if current:
-                result.append(current)
-                current = ""
-            for i in range(0, len(line), max_size):
-                result.append(line[i:i + max_size])
-            continue
-
-        candidate = current + '\n' + line if current else line
-        if len(candidate) > max_size:
-            result.append(current)
-            current = line
-        else:
-            current = candidate
-
-    if current:
-        result.append(current)
-
-    return result
-
-
-def _split_into_segments(text: str) -> list[tuple[str, str]]:
-    """将文本按 代码块/表格/普通文本 拆分为独立段。
-
-    代码块（```）和表格块作为不可分割的原子单元，后续不会在它们
-    内部做任何切分。
+    原子块间隙中的文本按段落边界（≥2 个连续换行符）拆分为 'text' 块。
 
     Returns:
-        [("text", content), ("table", content), ("code", content), ...]
+        [(type, text), ...]
     """
-    lines = text.split('\n')
-    segments = []
+    lines = content.split('\n')
+    n = len(lines)
+
+    # ── 第一遍：找出所有原子块的位置 ──
+    atomics: list[tuple[int, int, str]] = []  # [(start, end, type), ...]
     i = 0
-    text_start = 0
+    while i < n:
+        stripped = lines[i].strip()
 
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # 代码块优先检测（避免表格误判）
+        # 代码块（优先检测，避免 ``` 被表格误判）
         if stripped.startswith('```'):
-            if text_start < i:
-                segments.append(("text", '\n'.join(lines[text_start:i])))
-            code_start = i
+            start = i
             i += 1
-            while i < len(lines):
+            while i < n:
                 if lines[i].strip().startswith('```'):
                     i += 1
                     break
                 i += 1
-            segments.append(("code", '\n'.join(lines[code_start:i])))
-            text_start = i
+            atomics.append((start, i, 'code'))
             continue
 
         # 表格：当前行是表格行 且 下一行是分隔行
-        if (_is_table_row(line) and
-                i + 1 < len(lines) and
-                _is_table_separator(lines[i + 1])):
-            if text_start < i:
-                segments.append(("text", '\n'.join(lines[text_start:i])))
-            table_start = i
-            i += 2
-            while i < len(lines) and _is_table_row(lines[i]):
+        if (_is_table_row(lines[i]) and i + 1 < n
+                and _is_table_separator(lines[i + 1])):
+            start = i
+            i += 2  # 跳过表头 + 分隔行
+            while i < n and _is_table_row(lines[i]):
                 i += 1
-            segments.append(("table", '\n'.join(lines[table_start:i])))
-            text_start = i
+            atomics.append((start, i, 'table'))
+            continue
+
+        # blockquote：连续的 > 开头行
+        if stripped.startswith('>'):
+            start = i
+            while i < n and lines[i].strip().startswith('>'):
+                i += 1
+            atomics.append((start, i, 'blockquote'))
             continue
 
         i += 1
 
-    if text_start < len(lines):
-        segments.append(("text", '\n'.join(lines[text_start:])))
+    # ── 第二遍：构建结果 ──
+    result: list[tuple[str, str]] = []
+    pos = 0
+    for a_start, a_end, a_type in atomics:
+        # 原子块之前的文本间隙 → 按段落切分
+        if pos < a_start:
+            gap = '\n'.join(lines[pos:a_start])
+            for para in re.split(r'\n{2,}', gap):
+                if para.strip():
+                    result.append(('text', para))
 
-    return segments
+        # 原子块本身
+        result.append((a_type, '\n'.join(lines[a_start:a_end])))
+        pos = a_end
+
+    # 最后一段文本
+    if pos < n:
+        gap = '\n'.join(lines[pos:])
+        for para in re.split(r'\n{2,}', gap):
+            if para.strip():
+                result.append(('text', para))
+
+    return result
 
 
-def _split_by_headings(text: str, max_size: int) -> list[str]:
-    """按 H2→H3→H4→H5→H6 标题递归切分文本段。
+def _split_text_by_lines(text: str, max_size: int) -> list[str]:
+    """按行切分超限文本块。
 
-    上级标题无法切分时自动降级到下級标题，全部耗尽可能后兜底按段落切分。
-    此函数只处理纯文本（不含表格和代码块），表格和代码块应在上游以
-    segment 方式单独处理。
+    逐行累加，超过 max_size 时切出一个新 chunk。
+    单行仍超限时按字符级硬切。
+    仅用于 text 类型块，不关心结构保护。
     """
     if len(text) <= max_size:
         return [text]
 
-    for level in range(2, 7):
-        prefix = '#' * level + ' '
-        pattern = r'(?=^' + prefix + r')'
-        sections = [s for s in re.split(pattern, text, flags=re.MULTILINE) if s]
-
-        if len(sections) <= 1:
-            continue
-
-        result = []
-        current = ""
-        for section in sections:
-            if len(current) + len(section) > max_size:
-                if current:
-                    result.extend(_split_by_headings(current, max_size))
-                if len(section) > max_size:
-                    result.extend(_split_by_headings(section, max_size))
-                    current = ""
-                else:
-                    current = section
-            else:
-                current += section
-
-        if current:
-            if len(current) > max_size:
-                result.extend(_split_by_headings(current, max_size))
-            else:
-                result.append(current)
-        return result
-
-    # 所有级别标题都切不了，兜底按段落切
-    return _split_by_paragraph(text, max_size)
-
-
-def _rechunk_one(text: str, max_size: int) -> list[str]:
-    """将单个超大 chunk 重新切分。
-
-    策略：
-    1. 先按 代码块/表格/文本 边界拆分为 segments
-    2. 代码块和表格各自作为不可分割的独立 chunk（即使超限也不切）
-    3. 文本段之间先尝试合并，超限则按标题层级递归切分
-    """
-    segments = _split_into_segments(text)
-    result = []
+    lines = text.split('\n')
+    chunks: list[str] = []
     current = ""
 
-    for seg_type, seg_content in segments:
-        if seg_type in ("table", "code"):
-            if current:
-                result.extend(_split_by_headings(current, max_size))
+    for line in lines:
+        # 单行超大：字符级硬切
+        if len(line) > max_size:
+            if current.strip():
+                chunks.append(current)
                 current = ""
-            # 表格/代码块即使超限也保持完整
-            if seg_content:
-                result.append(seg_content)
+            for i in range(0, len(line), max_size):
+                chunks.append(line[i:i + max_size])
+            continue
+
+        candidate = current + '\n' + line if current else line
+        if len(candidate) > max_size:
+            if current.strip():
+                chunks.append(current)
+            current = line
         else:
-            if len(current) + len(seg_content) <= max_size:
-                current += seg_content
-            else:
-                if current:
-                    result.extend(_split_by_headings(current, max_size))
-                if len(seg_content) > max_size:
-                    result.extend(_split_by_headings(seg_content, max_size))
-                    current = ""
-                else:
-                    current = seg_content
+            current = candidate
 
-    if current:
-        result.extend(_split_by_headings(current, max_size))
+    if current.strip():
+        chunks.append(current)
 
-    return result
+    return chunks
 
 
-def _rechunk_oversized(chunks: list[str], max_size: int) -> list[str]:
-    """后处理：检查还原表格后的 chunk 是否超限，对超限的重新切分。
+def _merge_adjacent_chunks(
+    typed_chunks: list[tuple[str, str]], max_size: int
+) -> list[str]:
+    """合并相邻 chunk 以减少上传 API 调用次数。
 
-    表格保护占位符很短（~26 字符），但还原后的真实表格可能几千字符，
-    导致此前在占位符基础上计算出的 chunk 实际上远超 API 限制。
-    此函数在还原后做最终检查，将超限 chunk 按更细粒度重新切分。
+    相邻 text 块之间插入 \\n\\n（还原段落间距），
+    其他类型块之间插入 \\n。
+    合并后仍 ≤ max_size 则继续尝试合并下一个。
 
-    同时过滤纯空白 chunk（如孤立的换行符），避免发送空内容到 dws API。
+    Args:
+        typed_chunks: [(type, text), ...]
+        max_size: 合并后单个 chunk 的上限
+
+    Returns:
+        纯 chunk 文本列表（去掉类型标签），过滤空白
     """
-    result = []
-    for chunk in chunks:
-        if len(chunk) <= max_size:
-            if chunk.strip():
-                result.append(chunk)
+    if not typed_chunks:
+        return []
+
+    result = [(typed_chunks[0][0], typed_chunks[0][1])]
+
+    for tp, text in typed_chunks[1:]:
+        prev_tp, prev_text = result[-1]
+        # text-text 之间用双换行还原段落间距
+        sep = '\n\n' if prev_tp == 'text' and tp == 'text' else '\n'
+        merged = prev_text + sep + text
+        if len(merged) <= max_size:
+            # 合并后的类型统一为 text（混合内容）
+            result[-1] = ('text', merged)
         else:
-            result.extend(c for c in _rechunk_one(chunk, max_size) if c.strip())
-    return result
+            result.append((tp, text))
+
+    return [t for _, t in result if t.strip()]
 
 
 # ────────────────────────────────────────────────────────────
@@ -1514,7 +1292,7 @@ def _sync_create(filepath: str, rel_path: str, body: str, title: str,
             return "failed", None
 
     # 分块创建
-    chunks = split_content(body)
+    chunks = split_content(body, label=rel_path)
     result = _chunked_create(title, chunks, target_node_id, ws_id)
     if result:
         write_frontmatter(filepath, dingding_link=result["docUrl"],
@@ -1580,7 +1358,7 @@ def _sync_update(filepath: str, rel_path: str, fm: dict, body: str, title: str,
             return "failed", None
 
     # 分块更新
-    chunks = split_content(body)
+    chunks = split_content(body, label=rel_path)
     update_resp = _chunked_update(doc_link, chunks)
     if update_resp is True:
         write_frontmatter(filepath, dingding_updated=now_ts,
