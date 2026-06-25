@@ -223,6 +223,11 @@ def _build_work_dir(tmp_path_factory, workspace_id: str,
     docs_dir = work_dir / "docs"
     shutil.copytree(str(DOCS_FIXTURES), str(docs_dir))
 
+    # ★ 复制 fixtures 根下的文件（如被 ../ 引用的图片）到 work_dir
+    for item in FIXTURES_DIR.iterdir():
+        if item.is_file() and not item.name.startswith("config"):
+            shutil.copy2(str(item), str(work_dir / item.name))
+
     # 生成配置文件（替换占位符）
     config_path = work_dir / f"config-{group}.json"
     with open(config_template, encoding="utf-8") as f:
