@@ -95,9 +95,20 @@ description: >-
 
 确定的映射关系将记录到同步配置文件的 `folder_mapping` 数组中（此时仅填充 `local_dir` 和 `dingtalk_folder_name`，`node_id` 和 `doc_url` 由脚本在阶段二回填）。
 
+#### Q5：钉钉文档命名方式？
+
+向用户提问，获取【钉钉文档命名方式】。
+
+**确认方法**：询问用户希望以什么方式命名钉钉文档：
+
+- **文件名**（默认）→ 使用本地 markdown 文件的文件名（不含 `.md` 后缀）作为钉钉文档名称
+- **H1 标题** → 使用文档正文中的第一个一级标题（`# 标题`）作为钉钉文档名称；如果文档中没有 H1 标题，则自动 fallback 到文件名
+
+用户不回答则默认使用文件名。记录到配置文件的 `doc_name_source` 字段，取值为 `"filename"` 或 `"h1"`。
+
 ### 1.2 创建同步配置文件（JSON）
 
-全部参数（Q1~Q4）确认完毕后，**创建同步配置文件 `dd-sync-cfg.json`**（JSON 格式），作为阶段一的最终产出。
+全部参数（Q1~Q5）确认完毕后，**创建同步配置文件 `dd-sync-cfg.json`**（JSON 格式），作为阶段一的最终产出。
 
 **JSON 配置模板：**
 
@@ -105,6 +116,7 @@ description: >-
 {
   "version": "1",
   "source_paths": ["docs/", "notes/api-guide.md"],
+  "doc_name_source": "filename",
   "knowledge_base": {
     "name": "智慧校园项目实施知识库",
     "workspace_id": "YOUR_WORKSPACE_ID"
@@ -130,6 +142,8 @@ description: >-
 
 **字段说明：**
 
+- `source_paths`：要同步的本地路径列表（目录或 `.md` 文件）
+- `doc_name_source`：钉钉文档名称来源策略，可选 `"filename"`（默认，使用文件名去掉 .md 后缀）或 `"h1"`（使用文档第一个 H1 标题，无 H1 时 fallback 到文件名）。可选，默认为 `"filename"`
 - `root_folder.node_id` / `root_folder.doc_url`：Q3 已知时填入，否则留空让脚本创建
 - `folder_mapping[].node_id` / `folder_mapping[].doc_url`：始终留空，由脚本创建后回填
 - `ignore_patterns`：glob 模式数组，匹配的 `.md` 文件将跳过不同步。可选，默认为空数组 `[]`

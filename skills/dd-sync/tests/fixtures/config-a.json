@@ -1,5 +1,6 @@
 {
   "version": "1",
+  "doc_name_source": "h1",
   "source_paths": ["docs/"],
   "knowledge_base": {
     "name": "测试知识库-GroupA",

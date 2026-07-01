@@ -106,6 +106,9 @@ def load_config(path: str) -> dict:
     if "ignore_patterns" not in config:
         config["ignore_patterns"] = []
 
+    if "doc_name_source" not in config:
+        config["doc_name_source"] = "filename"  # 文档命名策略：filename | h1
+
     return config
 
 
@@ -401,11 +404,17 @@ def write_frontmatter(filepath: str, dingding_link: str = None,
         f.write(new_content)
 
 
-def get_doc_title(body: str, filepath: str) -> str:
-    """获取文档标题：第一个 H1 标题，无则用文件名（不含 .md）。"""
-    match = re.search(r"^# (.+)$", body, re.MULTILINE)
-    if match:
-        return match.group(1).strip()
+def get_doc_title(body: str, filepath: str, doc_name_source: str = "filename") -> str:
+    """获取文档标题。
+
+    根据 doc_name_source 配置决定命名策略：
+    - "filename": 使用文件名（不含 .md 后缀）作为文档名
+    - "h1": 使用第一个 H1 标题作为文档名，无 H1 时 fallback 到文件名
+    """
+    if doc_name_source == "h1":
+        match = re.search(r"^# (.+)$", body, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
     return os.path.splitext(os.path.basename(filepath))[0]
 
 
@@ -1127,7 +1136,7 @@ def phase2b_prepare_documents(config: dict, dry_run: bool = False,
     for filepath in new_files:
         rel = os.path.relpath(filepath, base_dir)
         fm, body = parse_frontmatter(filepath)
-        title = get_doc_title(body, filepath)
+        title = get_doc_title(body, filepath, config["doc_name_source"])
         target_node_id = find_target_folder(filepath, config)
 
         if dry_run:
@@ -1206,7 +1215,7 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
                                              path_to_url, file_dir)
 
     target_node_id = find_target_folder(filepath, config)
-    title = get_doc_title(body, filepath)  # 标题仍用原始 body（不含占位标记）
+    title = get_doc_title(body, filepath, config["doc_name_source"])  # 标题仍用原始 body（不含占位标记）
     content_size = len(clean_body)
     ws_id = config["knowledge_base"]["workspace_id"]
 
