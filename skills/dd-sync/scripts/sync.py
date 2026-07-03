@@ -1203,11 +1203,12 @@ def find_target_folder(filepath: str, config: dict) -> str:
 
 
 def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
-                  verbose: bool = False,
+                  verbose: bool = False, force: bool = False,
                   path_to_url: dict[str, str] = None) -> tuple[str, dict]:
     """同步单个文件。
 
     Args:
+        force: 若为 True，跳过内容哈希检查，强制重新同步。
         path_to_url: 本地文件绝对路径 → 钉钉文档 URL 的映射，用于替换交叉引用。
 
     Returns:
@@ -1250,10 +1251,13 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
 
     if "dingding_link" in fm and fm["dingding_link"]:
         # ── 检查内容是否变化 ──
-        cached_hash = fm.get("dingding_content_hash")
-        if cached_hash and cached_hash == body_hash:
-            print(f"  [SKIP] {rel_path} — 内容未变化")
-            return "skip", {}
+        if not force:
+            cached_hash = fm.get("dingding_content_hash")
+            if cached_hash and cached_hash == body_hash:
+                print(f"  [SKIP] {rel_path} — 内容未变化")
+                return "skip", {}
+        elif verbose:
+            print(f"  [FORCE] {rel_path} — 强制执行，跳过哈希检查")
 
         # ── 更新已有文档 ──
         status, node_id = _sync_update(filepath, rel_path, fm, clean_body,
@@ -1487,12 +1491,14 @@ def _chunked_update(doc_link: str, chunks: list[str]):
 
 
 def phase3_sync_documents(config: dict, dry_run: bool = False,
-                          verbose: bool = False, single_file: str = None):
+                          verbose: bool = False, force: bool = False,
+                          single_file: str = None):
     """阶段三：执行文档同步。
 
     此时所有文件的 dingding_link 已在阶段二-B 就绪，路径→URL 映射完整，
     交叉引用可在上传内容时一次性解决。
 
+    force: 若为 True，跳过内容哈希检查，强制重新同步所有文档。
     single_file: 若指定，则只同步该文件，跳过其余文件。
     """
     base_dir = config["_base_dir"]
@@ -1531,7 +1537,7 @@ def phase3_sync_documents(config: dict, dry_run: bool = False,
     for filepath in files:
         rel = os.path.relpath(filepath, base_dir)
         status, img_st = sync_one_file(filepath, config, dry_run=dry_run,
-                                       verbose=verbose,
+                                       verbose=verbose, force=force,
                                        path_to_url=path_to_url)
         stats[status] = stats.get(status, 0) + 1
         img_stats["success"] += img_st.get("success", 0)
@@ -1566,6 +1572,8 @@ def main():
     parser.add_argument("--config", required=True, help="配置文件路径 (dd-sync-cfg.json)")
     parser.add_argument("--dry-run", action="store_true", help="预览模式，不实际执行")
     parser.add_argument("--verbose", action="store_true", help="详细输出")
+    parser.add_argument("--force", action="store_true",
+                        help="强制重新同步所有文档，忽略内容哈希检查")
     parser.add_argument("--file", dest="single_file",
                         help="只同步指定的单个 markdown 文件（相对或绝对路径）")
     args = parser.parse_args()
@@ -1597,7 +1605,7 @@ def main():
 
     # 阶段三
     phase3_sync_documents(config, dry_run=args.dry_run, verbose=args.verbose,
-                          single_file=args.single_file)
+                          force=args.force, single_file=args.single_file)
 
 
 if __name__ == "__main__":

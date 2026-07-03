@@ -170,11 +170,12 @@ python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json
 
 **可选参数：**
 
-| 参数        | 说明                                                           |
-| ----------- | -------------------------------------------------------------- |
-| `--dry-run` | 预览模式，只打印将要执行的操作，不实际调用 dws                 |
-| `--verbose` | 输出更详细的日志                                               |
-| `--file`    | 只同步指定的单个 markdown 文件（相对或绝对路径），用于出错重试 |
+| 参数        | 说明                                                             |
+| ----------- | ---------------------------------------------------------------- |
+| `--dry-run` | 预览模式，只打印将要执行的操作，不实际调用 dws                   |
+| `--verbose` | 输出更详细的日志                                                 |
+| `--force`   | 强制重新同步所有文档，忽略内容哈希检查，即使内容未变化也执行更新 |
+| `--file`    | 只同步指定的单个 markdown 文件（相对或绝对路径），用于出错重试   |
 
 **重试单个文件示例：**
 
@@ -184,6 +185,9 @@ python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json --file 
 
 # 结合 dry-run 预览重试计划
 python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json --file docs/api/auth.md --dry-run
+
+# 结合 verbose 查看哪些文件被强制执行
+python /path/to/skills/dd-sync/scripts/sync.py --config dd-sync-cfg.json --force --verbose
 ```
 
 **脚本自动完成：**

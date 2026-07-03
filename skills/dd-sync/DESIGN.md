@@ -15,7 +15,7 @@
                                         │
                     ┌───────────────────┘
                     ▼
-              python sync.py --config dd-sync-cfg.json
+              python sync.py --config dd-sync-cfg.json [--dry-run] [--verbose] [--force] [--file ...]
                     │
                     ├── 阶段二：创建/验证钉钉文件夹，回填 node_id/doc_url
                     │
@@ -25,7 +25,7 @@
               终端输出同步结果报告
 ```
 
-AI 只需做一件事：运行 `python scripts/sync.py --config dd-sync-cfg.json`，然后向用户转述结果。
+AI 只需做一件事：运行 `python scripts/sync.py --config dd-sync-cfg.json [--dry-run] [--verbose] [--force] [--file ...]`，然后向用户转述结果。
 
 ## 3. 配置文件：`dd-sync-cfg.json`
 
@@ -135,9 +135,9 @@ graph TB
         S --> S1[创建文档 / 分块创建]
         S1 --> S2{创建成功?}
         S2 -->|否| S3[❌ 失败]
-        R -->|是| T{body_hash == 缓存?}
-        T -->|相同| T1[(SKIP 内容未变化)]
-        T -->|不同/无缓存| U[_sync_update 更新]
+        R -->|是| T{--force 或<br/>body_hash != 缓存?}
+        T -->|否（内容未变化）| T1[(SKIP 内容未变化)]
+        T -->|是| U[_sync_update 更新]
         U --> U1{内容大小?}
         U1 -->|≤9000| U2[overwrite 单次覆盖]
         U1 -->|>9000| U3[chunked_update 分块]
@@ -186,6 +186,7 @@ sync.py
 │   ├── --config     配置文件路径（必填）
 │   ├── --dry-run    预览模式，不实际调用 dws
 │   ├── --verbose    详细输出
+│   ├── --force       强制重新同步，忽略内容哈希检查
 │   └── --file       指定单个文件同步，跳过其余文件（用于出错重试）
 │
 ├── Config 模块
@@ -243,15 +244,18 @@ sync.py
     │   ├── 遍历 folder_mapping，只为有实际文件的映射创建文件夹
     │   └── save_config 回填子文件夹 node_id/doc_url
     │
-    └── phase3_sync_documents(config, single_file=None)
+    └── phase3_sync_documents(config, force=False, single_file=None)
         ├── collect_md_files
         ├── 若 single_file 指定，过滤只保留该文件（相对/绝对路径均可）
         ├── for each file:
         │   ├── parse_frontmatter
         │   ├── discover_images + strip_images → 产出 clean_body
         │   ├── 正文（clean_body）为空 → skip + warn
-        │   ├── 有 dingding_link？→ update_doc → 更新 dingding_updated
-        │   ├── 无 dingding_link？→ create_doc → 写入 dingding_link + dingding_updated
+        │   ├── 有 dingding_link？→ 检查 body_hash
+        │   │   ├── force=True → 跳过哈希检查，强制执行更新
+        │   │   ├── body_hash 未变化 → skip（内容未变化）
+        │   │   └── body_hash 变化 → update_doc → 更新 dingding_updated + hash
+        │   ├── 无 dingding_link？→ create_doc → 写入 dingding_link + dingding_updated + hash
         │   └── 文档写入成功后 → insert_images 上传图片并清理占位标记
         └── 输出同步结果报告（含图片统计）
 ```
