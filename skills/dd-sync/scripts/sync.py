@@ -45,6 +45,11 @@ CROSS_REF_PATTERN = re.compile(
     r'(?<!\!)\[([^\]]*)\]\(((?!https?://)[^)]*\.md(?:#[^)]*)?)\)'
 )
 
+# 内部锚点引用正则：匹配 [text](#anchor)，不匹配图片引用
+INTERNAL_ANCHOR_PATTERN = re.compile(
+    r'(?<!\!)\[([^\]]*)\]\(#([^)]*)\)'
+)
+
 
 def now_iso8601() -> str:
     """返回当前时间的 ISO 8601 格式字符串（东八区）。"""
@@ -1024,6 +1029,21 @@ def replace_cross_refs(body: str, cross_refs: list[dict],
     return result
 
 
+def replace_internal_anchors(body: str) -> str:
+    """将文档内部锚点链接 [text](#anchor) 替换为纯文本 text(anchor)。
+
+    钉钉知识库不支持 Markdown 内部锚点跳转，保留链接无意义，
+    转为纯文本保留信息。
+    """
+    def _replace(match):
+        text = match.group(1)
+        anchor = urllib.parse.unquote(match.group(2))
+        if text == anchor:
+            return f'<ins>{text}</ins>'
+        return f'<ins>{text}({anchor})</ins>'
+    return INTERNAL_ANCHOR_PATTERN.sub(_replace, body)
+
+
 def phase2_prepare_folders(config: dict, dry_run: bool = False):
     """阶段二：准备钉钉文件夹结构。
 
@@ -1213,6 +1233,9 @@ def sync_one_file(filepath: str, config: dict, dry_run: bool = False,
         if cross_refs:
             clean_body = replace_cross_refs(clean_body, cross_refs,
                                              path_to_url, file_dir)
+
+    # ★ 内部锚点替换：将 [text](#anchor) 转为纯文本 text(anchor)
+    clean_body = replace_internal_anchors(clean_body)
 
     target_node_id = find_target_folder(filepath, config)
     title = get_doc_title(body, filepath, config["doc_name_source"])  # 标题仍用原始 body（不含占位标记）
