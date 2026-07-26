@@ -32,6 +32,9 @@ import yaml
 # 常量
 # ────────────────────────────────────────────────────────────
 
+# 平台检测：Windows 下 dws 命令为 dws.exe，macOS/Linux 下为 dws
+DWS_CMD = "dws.exe" if sys.platform == "win32" else "dws"
+
 CHUNK_SIZE_THRESHOLD = 9_000   # 字符数，超过此值触发分块
 MAX_CHUNK_SIZE = 9_000         # 每块最大 9000 字符（dws API 限制 10000 字符，留 10% 余量）
 CST = timezone(timedelta(hours=8))
@@ -137,7 +140,7 @@ def run_dws(args: list[str], dry_run: bool = False) -> dict:
 
     dry_run 模式下不实际执行，返回模拟数据。
     """
-    cmd = ["dws"] + args
+    cmd = [DWS_CMD] + args
 
     if dry_run:
         print(f"  [DRY RUN] {' '.join(cmd)}")
@@ -1584,9 +1587,9 @@ def main():
 
     # 检测 dws
     try:
-        subprocess.run(["dws", "--version"], capture_output=True, check=True)
+        subprocess.run([DWS_CMD, "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        sys.exit("❌ dws CLI 未安装或未登录。请先安装: https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli")
+        sys.exit(f"❌ {DWS_CMD} CLI 未安装或未登录。请先安装: https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli")
 
     config_path = os.path.abspath(args.config)
     config = load_config(config_path)
