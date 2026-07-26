@@ -118,9 +118,13 @@ def load_config(path: str) -> dict:
 
 
 def save_config(config: dict, path: str):
-    """回填 node_id / doc_url 后写回配置文件。"""
+    """回填 node_id / doc_url 后写回配置文件。
+
+    写入时自动过滤 _ 开头的内部运行时字段（如 _config_path、_base_dir）。
+    """
+    public_config = {k: v for k, v in config.items() if not k.startswith("_")}
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(public_config, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
 
