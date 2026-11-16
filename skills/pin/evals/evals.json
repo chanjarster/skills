@@ -11,7 +11,7 @@
         "top-level-dirs-exist: All 6 numbered top-level directories exist (0-业务知识, 1-技术文档-X, 2-UI设计, 3-规范文档-X, 4-任务日志, 5-assets)",
         "index-files-created: Each top-level directory has a 0-索引.md file",
         "overview-has-education-content: The 0-overview.md file contains education-related domains (课程管理, 学员管理, 支付结算, 讲师管理)",
-        "subdirectories-correct: Subdirectories exist (1-需求文档/, 2-操作手册/, 1-技术架构.md, 2-开发环境.md, 3-代码地图/, 4-研究记录/, 1-UI设计图/, 2-UI切图/, 1-git规范.md, 2-代码规范.md, 3-示例/)",
+        "subdirectories-correct: Subdirectories exist (1-需求文档/, 2-操作手册/, 1-技术架构.md, 2-系统设计/, 3-开发环境.md, 4-代码地图/, 5-研究记录/, 1-UI设计图/, 2-UI切图/, 1-git规范.md, 2-代码规范.md, 3-示例/)",
         "task-status-dirs-exist: 任务日志 has all 3 status subdirs (0-未开始, 1-进行中, 2-已完成)"
       ]
     },
@@ -35,15 +35,15 @@
       "id": 3,
       "name": "tech-documents-suite",
       "prompt": "帮我创建技术架构文档、开发环境文档和代码地图。项目技术栈是 React 18 + Next.js 14 + TypeScript 前端，Node.js 20 + NestJS 10 后端，PostgreSQL 15 数据库，Prisma ORM。微服务包括课程服务、学员服务、支付服务。本地开发需要 Node.js 20+、PostgreSQL、Redis。启动命令是 npm run dev。",
-      "expected_output": "在 pin-docs/1-技术文档-X/ 下创建 1-技术架构.md（包含技术栈、微服务清单、服务关系图）、2-开发环境.md（包含启动步骤、前置条件、Debug方法）、3-代码地图/ 下创建 1-支付结算.md（代码清单、API清单、实体关系图）。更新 0-索引.md",
+      "expected_output": "在 pin-docs/1-技术文档-X/ 下创建 1-技术架构.md（包含技术栈、微服务清单、服务关系图）、3-开发环境.md（包含启动步骤、前置条件、Debug方法）、4-代码地图/ 下创建 1-支付结算.md（代码清单、API清单、实体关系图）。更新 0-索引.md",
       "files": [],
       "assertions": [
         "tech-architecture-exists: 1-技术架构.md exists under 1-技术文档-X/",
         "architecture-has-tech-stack: The architecture doc mentions React, Next.js, NestJS, PostgreSQL, Prisma",
         "architecture-has-mermaid-diagram: The architecture doc contains at least one mermaid diagram (service relationships)",
-        "dev-environment-exists: 2-开发环境.md exists under 1-技术文档-X/",
+        "dev-environment-exists: 3-开发环境.md exists under 1-技术文档-X/",
         "dev-env-has-startup-steps: The dev environment doc contains startup instructions (npm run dev or similar)",
-        "code-map-exists: A code map file exists under 3-代码地图/ with numbered naming",
+        "code-map-exists: A code map file exists under 4-代码地图/ with numbered naming",
         "code-map-has-api-list: The code map contains an API清单 or API list section",
         "tech-index-updated: 1-技术文档-X/0-索引.md references the created documents"
       ]
@@ -66,7 +66,7 @@
       "id": 5,
       "name": "convention-and-research",
       "prompt": "帮我创建 git 规范和代码规范文档，以及一个研究记录。Git 规范：使用 Git Flow 分支模型，main 是生产分支，develop 是开发分支，feature/* 是功能分支。Commit 使用 Conventional Commits 格式。代码规范：使用 ESLint + Prettier，命名使用 camelCase，组件使用 PascalCase。研究主题：Next.js App Router 与 Pages Router 的对比，结论是 App Router 更适合新项目，支持 Server Components 和 Streaming。",
-      "expected_output": "在 pin-docs/3-规范文档-X/ 下创建 1-git规范.md（包含分支规范、commit规范、mermaid分支图）、2-代码规范.md（包含命名规范、工具配置）。在 1-技术文档-X/4-研究记录/ 下创建 Next.js Router 研究目录和 research.md。更新各目录的 0-索引.md",
+      "expected_output": "在 pin-docs/3-规范文档-X/ 下创建 1-git规范.md（包含分支规范、commit规范、mermaid分支图）、2-代码规范.md（包含命名规范、工具配置）。在 1-技术文档-X/5-研究记录/ 下创建 Next.js Router 研究目录和 research.md。更新各目录的 0-索引.md",
       "files": [],
       "assertions": [
         "git-convention-exists: 1-git规范.md exists under 3-规范文档-X/",
@@ -74,7 +74,7 @@
         "git-has-mermaid-diagram: The git convention contains at least one mermaid diagram",
         "code-convention-exists: 2-代码规范.md exists under 3-规范文档-X/",
         "code-convention-has-naming: The code convention mentions naming conventions (camelCase or PascalCase)",
-        "research-record-exists: A research directory exists under 1-技术文档-X/4-研究记录/ containing research.md",
+        "research-record-exists: A research directory exists under 1-技术文档-X/5-研究记录/ containing research.md",
         "research-has-findings: The research document contains core findings or conclusions about Next.js routers",
         "convention-index-updated: 3-规范文档-X/0-索引.md references the convention documents",
         "research-index-updated: 1-技术文档-X/0-索引.md references the research record"

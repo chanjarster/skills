@@ -30,13 +30,15 @@ Each evaluation runs eval prompts (defined in `evals/evals.json`) with and witho
 
 1. **Index-first navigation**: Every directory has a `0-索引.md` index file. AI should read indexes to locate documents rather than scanning directories — this is a context window optimization.
 
-2. **Template system**: 14 standardized templates in `references/templates/` cover all document types. Each uses YAML frontmatter with `type:` declaration and `{placeholder}` syntax for variable content.
+2. **Template system**: 15 standardized templates in `references/templates/` cover all document types. Each uses YAML frontmatter with `type:` declaration and `{placeholder}` syntax for variable content.
 
-3. **DDD for business docs**: Business requirements are organized by bounded contexts — one file per domain, with consistent naming across requirement docs, operation manuals, and code maps.
+3. **DDD for business docs**: Business requirements are organized by bounded contexts — one file per domain, with consistent naming across requirement docs, operation manuals, system design, and code maps.
 
 4. **AI-oriented content**: Documents should only contain information that cannot be derived from code itself. Exclude: property names, method signatures, detailed logic obvious from source.
 
 5. **Three-state task lifecycle**: Tasks flow through `0-未开始` → `1-进行中` → `2-已完成` as directory moves.
+
+6. **ASD-STE100 writing standard**: All documents follow Simplified Technical English rules — one idea per sentence, imperative steps, active voice, simple tenses, one term per concept, max 6 sentences per paragraph. STE rules are adapted to Chinese (sentence caps ≈25 chars for procedures, ≈40 for descriptions). Full rules live in `references/workflows/6-写作规范.md`.
 
 ### Directory Structure
 
@@ -47,7 +49,8 @@ pin/
 ├── evals/evals.json         # 6 eval test cases
 ├── references/
 │   ├── idea.md              # Full pin-docs spec
-│   └── templates/           # 14 document templates
+│   ├── templates/           # 15 document templates
+│   └── workflows/           # init, navigation, CRUD, tasks, index rules, writing standard
 ├── pin-docs/                # Live docs (self-dogfooding)
 ├── pin-workspace/           # Eval results (with_skill vs without_skill)
 └── scripts/                 # Python grading scripts
@@ -60,6 +63,7 @@ pin/
 | `overview.md` | Project overview |
 | `requirement.md` | Business requirement |
 | `tech-architecture.md` | Technical architecture |
+| `system-design.md` | Per-domain system design |
 | `dev-environment.md` | Dev environment setup |
 | `code-map.md` | Code structure map |
 | `research.md` | Research record |
@@ -71,5 +75,6 @@ pin/
 
 - **Format**: Markdown with YAML frontmatter
 - **Diagrams**: Mermaid (flowcharts, graphs)
+- **Writing standard**: ASD-STE100 (Simplified Technical English), rules adapted for Chinese
 - **Evaluation**: Python 3 grading scripts
 - **Language**: Mixed Chinese/English — templates and instructions in Chinese, eval assertions in English

@@ -106,8 +106,8 @@ def grade_eval1(base_path):
     subdirs = [
         os.path.join(base_path, 'pin-docs/0-业务知识/1-需求文档'),
         os.path.join(base_path, 'pin-docs/0-业务知识/2-操作手册'),
-        os.path.join(tech_dir, '3-代码地图'),
-        os.path.join(tech_dir, '4-研究记录'),
+        os.path.join(tech_dir, '4-代码地图'),
+        os.path.join(tech_dir, '5-研究记录'),
         os.path.join(base_path, 'pin-docs/2-UI设计/1-UI设计图'),
         os.path.join(base_path, 'pin-docs/2-UI设计/2-UI切图'),
         os.path.join(conv_dir, '3-示例'),
@@ -242,11 +242,11 @@ def grade_eval3(base_path):
     })
 
     # 4. dev-environment-exists
-    dev_env_path = os.path.join(tech_dir, '2-开发环境.md')
+    dev_env_path = os.path.join(tech_dir, '3-开发环境.md')
     dev_env_exists = os.path.isfile(dev_env_path)
     dev_env_content = read_file(dev_env_path) if dev_env_exists else None
     results.append({
-        "text": "dev-environment-exists: 2-开发环境.md exists under 1-技术文档-X/",
+        "text": "dev-environment-exists: 3-开发环境.md exists under 1-技术文档-X/",
         "passed": dev_env_exists,
         "evidence": f"Dev env file exists: {dev_env_exists}"
     })
@@ -260,7 +260,7 @@ def grade_eval3(base_path):
     })
 
     # 6. code-map-exists
-    code_map_dir = os.path.join(tech_dir, '3-代码地图')
+    code_map_dir = os.path.join(tech_dir, '4-代码地图')
     if os.path.isdir(code_map_dir):
         code_map_files = [f for f in os.listdir(code_map_dir) if f.endswith('.md')]
         code_map_exists = len(code_map_files) > 0
@@ -270,7 +270,7 @@ def grade_eval3(base_path):
         code_map_exists = False
         code_map_content = None
     results.append({
-        "text": "code-map-exists: A code map file exists under 3-代码地图/",
+        "text": "code-map-exists: A code map file exists under 4-代码地图/",
         "passed": code_map_exists,
         "evidence": f"Code map files: {code_map_files if os.path.isdir(code_map_dir) else 'code_map_dir not found'}"
     })
@@ -412,7 +412,7 @@ def grade_eval5(base_path):
 
     # 6. research-record-exists
     tech_dir = resolve_tech_dir(base_path)
-    research_dir = os.path.join(tech_dir, '4-研究记录')
+    research_dir = os.path.join(tech_dir, '5-研究记录')
     research_exists = False
     research_content = None
     if os.path.isdir(research_dir):
@@ -424,7 +424,7 @@ def grade_eval5(base_path):
                 research_content = read_file(research_md)
                 break
     results.append({
-        "text": "research-record-exists: A research directory exists under 4-研究记录/ containing research.md",
+        "text": "research-record-exists: A research directory exists under 5-研究记录/ containing research.md",
         "passed": research_exists,
         "evidence": f"Research exists: {research_exists}"
     })
