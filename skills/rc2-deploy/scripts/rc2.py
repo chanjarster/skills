@@ -301,6 +301,8 @@ def normalize_server_url(raw):
             raise RancherError(
                 "这里要填 Rancher API 根地址（以 /v3 结尾），不是项目或资源的地址"
             )
+    if url.endswith("/apikeys"):
+        url = url[: -len("/apikeys")]
     if not re.search(r"/v\d+$", url):
         url += "/v3"
     return url
@@ -385,6 +387,13 @@ def scope_cluster(config):
 
 def server_root(url):
     return re.sub(r"/v\d+$", "", (url or "").rstrip("/"))
+
+
+def apikeys_url(server_url):
+    """由 Rancher 地址推导 API Key 创建页面地址。"""
+    root = server_root(server_url)
+    root = re.sub(r"/k8s/clusters/[^/]+$", "", root)
+    return f"{root}/apikeys"
 
 
 def parse_ref(raw, default_namespace=None):
@@ -581,7 +590,8 @@ def config_instruction(name=None):
         "请让用户在他/她自己的终端执行下面的命令。\n"
         "命令会交互询问 Access Key 和 Secret Key，密钥不回显。\n"
         "不要把 Access Key 或 Secret Key 粘贴到对话里。\n"
-        f"  {script_hint('config add', name)}"
+        f"  {script_hint('config add', name)}\n"
+        "还没有 API Key 时：登录 Rancher，打开 https://<Rancher 域名>/apikeys 创建。"
     )
 
 
@@ -683,6 +693,9 @@ def config_add(args):
     url = normalize_server_url(
         input("Rancher API 地址（例如 https://rancher.example.com/v3）: ")
     )
+    print(f"请在浏览器打开 API Key 页面：{apikeys_url(url)}")
+    print("点「创建 API Key」。集群级 token 选择目标集群。")
+    print("如果页面不存在，从右上角头像进入 Account & API Keys。")
     access_key = input("Access Key（用户名）: ").strip()
     secret_key = getpass.getpass("Secret Key（输入不回显）: ").strip()
     if not access_key or not secret_key:
@@ -1234,11 +1247,13 @@ class RancherClient:
         except urllib.error.HTTPError as exc:
             text = exc.read().decode("utf-8", "replace")
             message = http_error_message(method, url, exc.code, text)
-            if exc.code == 401 and self.scoped:
-                message += (
-                    "\n当前配置是集群级 scope token。请确认 scope 集群与项目集群一致，"
-                    "并确认 token 未过期。"
-                )
+            if exc.code == 401:
+                message += f"\n请在 {apikeys_url(self.base)} 重新创建 API Key。"
+                if self.scoped:
+                    message += (
+                        "\n当前配置是集群级 scope token。请确认 scope 集群与项目集群一致，"
+                        "并确认 token 未过期。"
+                    )
             raise RancherError(message, status=exc.code)
         except urllib.error.URLError as exc:
             raise RancherError(f"无法连接 Rancher（{url}）：{exc.reason}")

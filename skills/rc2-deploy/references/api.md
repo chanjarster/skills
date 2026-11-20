@@ -7,9 +7,11 @@
 1. API 根地址以 `/v3` 结尾，例如 `https://rancher.example.com/v3`。
 2. 脚本用 HTTP Basic 认证。用户名是 Access Key，密码是 Secret Key。
 3. Access Key 以 `token-` 开头。
-4. API Key 不要设置 scope。设置 scope 后，多数请求返回 403。
+4. 集群级 scope 的 token 只能访问该集群的 Kubernetes API。见第 8 节。
 5. 项目 ID 的格式是 `c-<集群>:p-<项目>`，例如 `c-abc123:p-def456`。
 6. 项目地址的格式是 `<根地址>/projects/<项目ID>`。
+7. API Key 在 `https://<Rancher 域名>/apikeys` 创建。
+8. 页面不存在时，从右上角头像进入 Account & API Keys。
 
 请求头：
 

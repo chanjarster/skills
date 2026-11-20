@@ -888,6 +888,8 @@ def test_normalize_scope_accepts_urls():
         ("https://rancher.example.com", "https://rancher.example.com/v3"),
         ("https://rancher.example.com/", "https://rancher.example.com/v3"),
         ("http://10.0.0.1:8080/v3", "http://10.0.0.1:8080/v3"),
+        ("https://rancher.example.com/apikeys", "https://rancher.example.com/v3"),
+        ("https://rancher.example.com/apikeys/", "https://rancher.example.com/v3"),
     ],
 )
 def test_normalize_server_url(raw, expected):
@@ -952,6 +954,17 @@ def test_normalize_kind_unknown():
         rc2.normalize_kind("cronjob")
 
 
+def test_apikeys_url():
+    assert rc2.apikeys_url("https://rancher.example.com/v3") == (
+        "https://rancher.example.com/apikeys"
+    )
+    assert rc2.apikeys_url("http://10.0.0.1:8080/v3") == "http://10.0.0.1:8080/apikeys"
+    assert (
+        rc2.apikeys_url("https://rancher.example.com/k8s/clusters/c-wq9nv")
+        == "https://rancher.example.com/apikeys"
+    )
+
+
 def test_mask_secret():
     assert rc2.mask_secret("token-abcdefgh") == "toke******gh"
     assert rc2.mask_secret(None) == "-"
@@ -988,6 +1001,7 @@ def test_config_add_writes_private_file(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "secret-prod" not in output
     assert "cluster:c-abc123" in output
+    assert f"{BASE_URL}/apikeys" in output
 
 
 def test_config_add_scope_accepts_project_url(tmp_path, monkeypatch, capsys):
@@ -1082,7 +1096,9 @@ def test_config_without_any_config(tmp_path, monkeypatch, capsys):
         path.unlink()
     rc2.load_server_configs.cache_clear()
     assert run("clusters") == 2
-    assert "config add" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "config add" in err
+    assert "/apikeys" in err
 
 
 # ────────────────────────────────────────────────────────────
@@ -1573,7 +1589,9 @@ def test_unauthorized(monkeypatch, capsys):
     rc2.save_server_config("demo", f"{BASE_URL}/v3", ACCESS_KEY, "wrong-secret")
     rc2.load_server_configs.cache_clear()
     assert run("clusters") == 2
-    assert "HTTP 401" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "HTTP 401" in err
+    assert f"{BASE_URL}/apikeys" in err
 
 
 # ────────────────────────────────────────────────────────────
@@ -1804,4 +1822,6 @@ def test_scoped_unauthorized_hint(capsys):
     )
     rc2.load_server_configs.cache_clear()
     assert run("clusters", "--server", "scoped") == 2
-    assert "集群级 scope token" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "集群级 scope token" in err
+    assert f"{SCOPED_BASE_URL}/apikeys" in err

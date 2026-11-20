@@ -96,24 +96,28 @@ Rancher 支持两种 API Key。两种都受用户角色限制。
 4. 详细取值步骤见 [references/api.md](references/api.md) 第 11 节。
 5. 集群级 token 的 scope 只填集群 ID，不填项目 ID。
 6. Token 创建后 scope 不能修改。填错就删除 Key 并重建。
-7. `config add` 可以直接粘贴集群或项目页面 URL。粘贴项目 URL 时会记录项目。
-8. 集群级 token 读不到项目名。请用 `remember` 命名，或在 `config add` 时填写项目名。
+7. `config add` 可以直接粘贴集群或项目页面 URL。粘贴项目 URL 时会记录项目并询问名称。
+8. 集群级 token 读不到项目名。用 `remember` 命名，或在 `config add` 时填写项目名。
+9. API Key 创建页面是 `https://<Rancher 域名>/apikeys`。
 
 ## 3. 首次使用
 
 ### 3.1 用户操作
 
-请用户在自己的终端运行：
+1. 登录 Rancher。
+2. 打开 `https://<Rancher 域名>/apikeys`。页面不存在时，从右上角头像进入 Account & API Keys。
+3. 点「创建 API Key」。集群级 token 选择目标集群。
+4. 复制 Access Key 和 Secret Key。
+5. 在自己的终端运行：
 
 ```bash
 python <skill_dir>/scripts/rc2.py config add prod
 ```
 
 脚本依次询问 5 项：配置名称、Rancher API 地址、Access Key、Secret Key、Token scope。
-Secret Key 输入不回显。
-Token scope 可以直接回车（所有集群）。
-Token scope 也可以粘贴集群或项目页面 URL，或填 `cluster:c-xxxxx`。
-粘贴项目页面 URL 时，脚本自动记录该项目地址，并询问项目名称（可选）。
+Secret Key 不回显。
+Token scope 可以直接回车（所有集群），也可粘贴集群或项目页面 URL，或填 `cluster:c-xxxxx`。
+粘贴项目页面 URL 时，脚本自动记录项目地址，并询问项目名称（可选）。
 
 ### 3.2 AI 操作
 
@@ -469,7 +473,7 @@ worker     prod       2/2    registry.local/worker:2.1    active  5d
 | --- | --- |
 | “还没有任何 Rancher 配置” | 请用户运行 `config add`。等待用户确认。 |
 | 不知道集群 ID | 按 2.2 节从集群页面或 API 地址获取。不要猜测。 |
-| HTTP 401 | 凭据无效或过期。请用户重新运行 `config add`。 |
+| HTTP 401 | 凭据无效或过期。到 `https://<Rancher 域名>/apikeys` 重新创建，再运行 `config add`。 |
 | HTTP 401（集群级 token） | 确认 scope 集群与项目集群一致。集群级 token 不能访问 `/v3`。确认 token 未过期。 |
 | `projects` 报“不能列项目” | 集群级 token 的正常行为。从 Rancher UI 复制项目地址。 |
 | “不属于 scope 集群” | 项目 ID 的集群部分必须等于 `cluster:c-xxxxx` 中的集群。 |
@@ -479,7 +483,6 @@ worker     prod       2/2    registry.local/worker:2.1    active  5d
 | `apply` 报缺少 `metadata.namespace` | 集群级模式必须写命名空间。清单缺少时，加上 `metadata.namespace`。 |
 | HTTP 403 | API Key 对目标资源没有权限。检查用户的项目角色和集群角色。 |
 | 项目地址不属于任何配置 | 列出已有配置。请用户提供正确的项目地址，或添加对应 Rancher。 |
-| 同时匹配多个配置 | 用 `--server <名称>` 指定配置。 |
 | “多个已记录的项目” | 用 `saved` 查看列表。再用 `--project <序号>` 选择。 |
 | “在多个命名空间存在” | 用 `--namespace` 指定命名空间。 |
 | 找不到集合地址 | 项目 ID 错误，或 API Key 没有该项目的权限。先运行 `projects` 确认项目 ID。 |
@@ -488,7 +491,6 @@ worker     prod       2/2    registry.local/worker:2.1    active  5d
 | Job 不支持 redeploy | 该 Rancher 版本的 Job 没有 `redeploy` 动作。导出 YAML，再用 `delete` 和 `apply` 重建。 |
 | Job 不支持 redeploy（集群级） | 这是设计行为。导出 YAML，再用 `delete` 和 `apply` 重建。 |
 | HTTPS 证书错误 | 加 `--insecure`。 |
-| 项目记忆文件无法写入 | 用 `--projects-file` 指定可写路径。 |
 
 ## 12. 参考
 
