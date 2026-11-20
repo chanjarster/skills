@@ -17,3 +17,9 @@ npx skills add https://github.com/chanjarster/skills --skill pin
 ```shell
 npx skills add https://github.com/chanjarster/skills --skill dd-sync
 ```
+
+## jk-track skill
+
+```shell
+npx skills add https://github.com/chanjarster/skills --skill jk-track
+```
