@@ -23,3 +23,9 @@ npx skills add https://github.com/chanjarster/skills --skill dd-sync
 ```shell
 npx skills add https://github.com/chanjarster/skills --skill jk-track
 ```
+
+## rc2-deploy skill
+
+```shell
+npx skills add https://github.com/chanjarster/skills --skill rc2-deploy
+```

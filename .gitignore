@@ -3,4 +3,7 @@ skills/pin/pin-docs/
 skills/pin/pin-workspace/
 skills/pin/.claude/
 __pycache__
+.pytest_cache/
 .vscode/
+# rc2-deploy 本地项目记忆
+.rancher-projects
