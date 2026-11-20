@@ -4,7 +4,7 @@
 子命令:
     info      查看构建概况（最新构建或指定 #N）
     history   查看构建历史（--all 列出全部）
-    jobs      列出子 job（文件夹/多分支 job）
+    jobs      列出 job 类型和子 job（多分支流水线/组织文件夹/文件夹）
     log       查看构建日志（支持 grep / tail / 保存到文件）
     tests     查看测试报告
     failure   汇总失败原因（失败阶段 + 失败用例 + 日志错误摘录）
@@ -17,6 +17,9 @@
     由用户在自己的终端执行 `config add` 交互写入，不要在对话中传用户名/API Token。
     job URL 通过 --job 提供，脚本按主机（及根路径）自动匹配对应配置；
     查询成功后 URL 会自动记录到项目目录的 .jenkins-jobs（纯文本，可用序号/短名称复用）。
+
+job 类型:
+    多分支流水线的根 job 不产生构建。先运行 jobs 确认类型，再用分支 job 查询。
 
 用法示例:
     python jk.py config add ci        # 由用户本人在终端执行
@@ -64,14 +67,14 @@ DEFAULT_INTERVAL = 15.0
 DEFAULT_WATCH_TIMEOUT = 3600.0
 
 JOB_TREE = (
-    "name,displayName,fullName,url,color,inQueue,queueItem[id,why,blocked,stuck],"
+    "_class,name,displayName,fullName,url,color,inQueue,queueItem[id,why,blocked,stuck],"
     "nextBuildNumber,"
     "lastBuild[number,url,building,result,duration,estimatedDuration,timestamp],"
     "lastCompletedBuild[number,url,building,result,duration,estimatedDuration,timestamp],"
     "lastFailedBuild[number],lastSuccessfulBuild[number]"
 )
 WATCH_TREE = (
-    "name,displayName,fullName,inQueue,queueItem[id,why],"
+    "_class,name,displayName,fullName,inQueue,queueItem[id,why],"
     "lastBuild[number,url,building,result,duration,estimatedDuration,timestamp]"
 )
 RUNNING_BUILD_TREE = (
@@ -584,30 +587,136 @@ class JenkinsClient:
 # ────────────────────────────────────────────────────────────
 
 
-def container_error_message(client, job_url):
-    """为文件夹/多分支 job 生成带子 job 列表的提示信息。"""
+JOB_KIND_MULTIBRANCH = "multibranch"
+JOB_KIND_ORGANIZATION_FOLDER = "organization-folder"
+JOB_KIND_FOLDER = "folder"
+JOB_KIND_CONTAINER = "container"
+JOB_KIND_LEAF = "leaf"
+JOB_KIND_LABELS = {
+    JOB_KIND_MULTIBRANCH: "多分支流水线",
+    JOB_KIND_ORGANIZATION_FOLDER: "组织文件夹",
+    JOB_KIND_FOLDER: "文件夹",
+    JOB_KIND_CONTAINER: "容器 job",
+    JOB_KIND_LEAF: "普通 job",
+}
+
+
+def job_kind(job):
+    """判定 job 类型，返回 JOB_KIND_* 之一。
+
+    多分支流水线的根 job 不产生构建，优先用 _class 识别。
+    _class 缺失或无法识别时，退回用 jobs 字段判断是否为容器。
+    """
+    if not isinstance(job, dict):
+        return JOB_KIND_LEAF
+    cls = str(job.get("_class") or "").lower()
+    if "multibranch" in cls:
+        return JOB_KIND_MULTIBRANCH
+    if "organizationfolder" in cls:
+        return JOB_KIND_ORGANIZATION_FOLDER
+    if cls.endswith("folder"):
+        return JOB_KIND_FOLDER
+    if isinstance(job.get("jobs"), list):
+        # 有子 job 但 _class 无法识别，归为容器
+        return JOB_KIND_CONTAINER
+    return JOB_KIND_LEAF
+
+
+def is_container_job(job):
+    return job_kind(job) != JOB_KIND_LEAF
+
+
+def leaf_job_label(job):
+    """为可构建的叶子 job 给出更具体的类型名称。"""
+    cls = str((job or {}).get("_class") or "").lower()
+    if "workflowjob" in cls:
+        return "流水线 job"
+    if "freestyleproject" in cls:
+        return "自由风格 job"
+    if "matrixproject" in cls:
+        return "矩阵 job"
+    if "externaljob" in cls:
+        return "外部 job"
+    return JOB_KIND_LABELS[JOB_KIND_LEAF]
+
+
+def container_error_message(client, job_url, job=None):
+    """为多分支流水线/组织文件夹/文件夹生成带子 job 列表的提示信息。"""
+    kind = job_kind(job or {})
+    parent = (job or {}).get("fullName") or (job or {}).get("name") or job_display(job_url)
     children = []
     try:
         data = client.get_json(
-            f"{job_url}/api/json?" + urllib.parse.urlencode({"tree": "jobs[name,url]"})
+            f"{job_url}/api/json?"
+            + urllib.parse.urlencode(
+                {"tree": "_class,name,fullName,url,jobs[name,displayName,url]"}
+            )
         )
-        children = (data or {}).get("jobs") or []
+        if isinstance(data, dict):
+            if kind == JOB_KIND_LEAF:
+                kind = job_kind(data)
+            parent = data.get("fullName") or data.get("name") or parent
+            children = data.get("jobs") or []
     except JenkinsError:
         pass
-    lines = [f"该 URL 是容器 job（文件夹或多分支），包含 {len(children)} 个子 job："]
+
+    if kind == JOB_KIND_MULTIBRANCH:
+        lines = [
+            f"「{parent}」是多分支流水线（Multibranch Pipeline）的根 job，它本身不产生构建。",
+            f"它的子 job 是各个分支，共 {len(children)} 个：",
+        ]
+    elif kind == JOB_KIND_ORGANIZATION_FOLDER:
+        lines = [
+            f"「{parent}」是组织文件夹（Organization Folder），按仓库自动扫描子 job，本身不产生构建。",
+            f"它的子 job 共 {len(children)} 个：",
+        ]
+    elif kind == JOB_KIND_FOLDER:
+        lines = [
+            f"「{parent}」是文件夹（Folder），它本身不产生构建，包含 {len(children)} 个子 job：",
+        ]
+    else:
+        lines = [
+            f"「{parent}」是容器 job（文件夹或多分支），它本身不产生构建，包含 {len(children)} 个子 job：",
+        ]
+
     for child in children[:10]:
         lines.append(f"  - {child.get('name')}")
     if len(children) > 10:
         lines.append(f"  … 其余 {len(children) - 10} 个")
-    if children:
-        server_name = getattr(client, "server_name", None) or "<server>"
-        lines.append("")
-        lines.append("请选择一个子 job，用 --child 指定，或直接使用子 job 的 URL：")
+
+    if not children:
+        lines.append("  （暂无子 job）")
+        if kind == JOB_KIND_MULTIBRANCH:
+            lines.append("")
+            lines.append(
+                "分支列表为空：可能还没有扫描到分支。"
+                "请到该 job 页面执行 Scan Multibranch Pipeline 后重试。"
+            )
+        elif kind == JOB_KIND_ORGANIZATION_FOLDER:
+            lines.append("")
+            lines.append(
+                "子 job 列表为空：可能还没有扫描到仓库。"
+                "请到该 job 页面执行 Scan Organization Folder 后重试。"
+            )
+        lines.append(f'再次确认：{SCRIPT_HINT} jobs --job "{job_url}"')
+        return "\n".join(lines)
+
+    lines.append("")
+    if kind in (JOB_KIND_MULTIBRANCH, JOB_KIND_ORGANIZATION_FOLDER):
+        first_url = children[0].get("url")
+        first_name = children[0].get("name")
+        lines.append("请先选择分支，用分支的 URL 查询：")
+        lines.append(f'  {SCRIPT_HINT} info --job "{first_url}"')
         lines.append(
-            f'  {SCRIPT_HINT} info --job "{children[0].get("url")}"'
+            "或用 --child 指定分支名（分支名含 / 时整体传入，例如 --child feature/login）："
         )
-        lines.append(f"或列出全部子 job：{SCRIPT_HINT} jobs --job \"{job_url}\"")
-        lines.append(f"（当前匹配到的 server 配置：{server_name}）")
+        lines.append(f'  {SCRIPT_HINT} info --job "{job_url}" --child "{first_name}"')
+    else:
+        lines.append("请选择一个子 job，用 --child 指定，或直接使用子 job 的 URL：")
+        lines.append(f'  {SCRIPT_HINT} info --job "{children[0].get("url")}"')
+    lines.append(f'列出全部子 job：{SCRIPT_HINT} jobs --job "{job_url}"')
+    server_name = getattr(client, "server_name", None) or "<server>"
+    lines.append(f"（当前匹配到的 server 配置：{server_name}）")
     return "\n".join(lines)
 
 
@@ -618,8 +727,8 @@ def fetch_job(client, job_url, tree=None):
     data = client.get_json(url)
     if not isinstance(data, dict):
         raise JenkinsError(f"无法读取 job 信息: {redact(url)}")
-    if "lastBuild" not in data and data.get("jobs") is not None:
-        raise JenkinsError(container_error_message(client, job_url))
+    if is_container_job(data):
+        raise JenkinsError(container_error_message(client, job_url, data))
     return data
 
 
@@ -644,7 +753,7 @@ def fetch_builds(client, job_url, limit=None):
 
 def child_jobs_tree(depth=1):
     tree = (
-        "name,displayName,fullName,url,color,"
+        "_class,name,displayName,fullName,url,color,"
         "lastBuild[number,result,building,timestamp,duration,estimatedDuration]"
     )
     if depth > 1:
@@ -653,7 +762,7 @@ def child_jobs_tree(depth=1):
 
 
 def fetch_child_jobs(client, job_url, depth=1):
-    """读取 job 详情（含子 job）；用 data.get("jobs") 判断是否容器。"""
+    """读取 job 详情（含子 job）；用 job_kind 判断 job 类型。"""
     data = client.get_json(
         f"{job_url}/api/json?"
         + urllib.parse.urlencode({"tree": child_jobs_tree(depth)})
@@ -678,7 +787,13 @@ def resolve_build_number(job, ref):
             )
     build = job.get(key) or {}
     if not build.get("number"):
-        raise JenkinsError(f"该 job 没有 {key} 对应的构建")
+        name = job.get("fullName") or job.get("name") or "该 job"
+        if key == "lastBuild":
+            raise JenkinsError(
+                f"「{name}」还没有任何构建记录（{leaf_job_label(job)}）。"
+                "先触发一次构建，或列出子 job 确认是否选错了分支"
+            )
+        raise JenkinsError(f"「{name}」没有 {key} 对应的构建")
     return int(build["number"])
 
 
@@ -1064,8 +1179,10 @@ def resolve_child_url(client, job_url, spec):
     children = data.get("jobs")
     parent = data.get("fullName") or data.get("name") or job_display(job_url)
     if not isinstance(children, list) or not children:
+        if job_kind(data) != JOB_KIND_LEAF:
+            raise JenkinsError(container_error_message(client, job_url, data))
         raise JenkinsError(
-            f"job「{parent}」没有子 job，不需要也不能使用 --child {spec}"
+            f"「{parent}」是{leaf_job_label(data)}，没有子 job，不能使用 --child {spec}"
         )
 
     def matches(child, value):
@@ -1598,19 +1715,27 @@ def cmd_jobs(args, client):
         job_url = resolve_child_url(client, job_url, args.child)
         args._job_url = job_url
     data = fetch_child_jobs(client, job_url, max(1, args.depth))
+    kind = job_kind(data)
+    kind_label = JOB_KIND_LABELS.get(kind, JOB_KIND_LABELS[JOB_KIND_CONTAINER])
     name = data.get("fullName") or data.get("name") or job_display(job_url)
     children = data.get("jobs")
     if not isinstance(children, list):
         if args.json:
             print(
                 json.dumps(
-                    {"job": name, "server": server_name, "children": None},
+                    {
+                        "job": name,
+                        "kind": kind,
+                        "kind_label": leaf_job_label(data),
+                        "server": server_name,
+                        "children": None,
+                    },
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         else:
-            print(f"{name} 没有子 job（这是一个叶子 job）")
+            print(f"{name} 没有子 job（{leaf_job_label(data)}，不是文件夹也不是多分支流水线）")
             print(f"查看最新构建: info --job '{job_url}'")
             print(f"列出全部构建: history --job '{job_url}' --all")
         return 0
@@ -1619,14 +1744,20 @@ def cmd_jobs(args, client):
     if args.json:
         print(
             json.dumps(
-                {"job": name, "server": server_name, "children": children},
+                {
+                    "job": name,
+                    "kind": kind,
+                    "kind_label": kind_label,
+                    "server": server_name,
+                    "children": children,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
 
-    print(f"Job: {name}（容器 job，共 {len(children)} 个子 job，server: {server_name}）\n")
+    print(f"Job: {name}（{kind_label}，共 {len(children)} 个子 job，server: {server_name}）\n")
     if not rows:
         print("没有子 job")
         return 0
@@ -2219,7 +2350,9 @@ def build_parser():
     p_history.set_defaults(func=cmd_history)
 
     p_jobs = subparsers.add_parser(
-        "jobs", help="列出子 job（文件夹/多分支 job）的最新构建", description="列出子 job（文件夹/多分支 job）的最新构建"
+        "jobs",
+        help="列出 job 类型和子 job（多分支流水线/组织文件夹/文件夹）的最新构建",
+        description="列出 job 类型和子 job（多分支流水线/组织文件夹/文件夹）的最新构建",
     )
     add_common_arguments(p_jobs)
     p_jobs.add_argument("--depth", type=int, default=1, help="子 job 递归层数（默认 1）")

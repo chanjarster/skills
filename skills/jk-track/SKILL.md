@@ -2,6 +2,7 @@
 name: jk-track
 description: >-
   查询、跟踪、触发和停止 Jenkins 构建。
+  支持识别 job 类型：多分支流水线、组织文件夹、文件夹和普通 job。
   支持查看最新构建和指定构建的结果、耗时、参数、变更和 Pipeline 阶段。
   支持查看失败构建的错误日志和测试报告。
   支持列出构建历史、子 job 和项目 job 列表。
@@ -9,7 +10,7 @@ description: >-
   支持按 job URL 自动匹配多个 Jenkins 的 server 配置。
   当用户提到 Jenkins、job、构建、build、pipeline、构建失败、构建日志、测试报告、
   “等构建跑完”、“看下最新构建”、“#128 为什么失败”、“有哪些分支”、
-  “触发构建”、“停止构建”、“/jk-track”时使用。
+  “多分支流水线”、“这个 job 是什么类型”、“触发构建”、“停止构建”、“/jk-track”时使用。
 ---
 
 # jk-track - Jenkins 构建跟踪
@@ -185,15 +186,18 @@ python <skill_dir>/scripts/jk.py <COMMAND> --job '<JOB_URL>'
 | `--insecure`、`--http-timeout` | HTTPS 证书和 HTTP 超时 |
 | `--json`、`--verbose`、`--no-color`、`--quiet` | 输出控制 |
 
-`jobs` 命令输出每个子 job 的 URL。可以直接使用这个 URL。也可以使用 `--child <名称>`。
+`jobs` 命令输出 job 类型和每个子 job 的 URL。可以直接使用这个 URL。也可以使用 `--child <名称>`。
 分支名包含 `/` 时，可以整体传入，例如 `--child feature/login`。
 
 ## 8. 工作流程
 
 ### 8.1 选择命令
 
+用户给出 job URL 时，先确认 job 类型。见 9.3 节。
+
 | 用户需求 | 命令 |
 | --- | --- |
+| 判断 job 类型 / 是否多分支流水线 | `jobs --job <URL>` |
 | 查看最新构建 | `info --job <URL>` |
 | 查看指定构建 | `info --job <URL> --build 128` |
 | 查看构建历史 | `history --job <URL>` 或 `--all` |
@@ -215,6 +219,9 @@ python <skill_dir>/scripts/jk.py <COMMAND> --job '<JOB_URL>'
 5. 回答必须包含 Jenkins 链接。
 6. 链接必须使用 Markdown 格式。
 7. 不要把链接放入行内代码或代码块。
+8. job URL 是多分支流水线时，必须先说明这是多分支流水线，再列出分支并请用户选择。
+9. 用户给的是分支 job URL 时，回答中说明它是哪个多分支流水线的分支。
+10. 不要把多分支流水线的根 job 当成“没有构建记录”的 job。
 
 链接写法：
 
@@ -266,16 +273,32 @@ python <skill_dir>/scripts/jk.py history --job '<JOB_URL>' --all
 
 最新构建在结果列标记为“最新”。用户选择构建后，运行 `info --build <编号>`。
 
-### 9.3 查看子 job
+### 9.3 确认 job 类型并查看子 job
+
+用户给出 job URL 时，先确认它是不是多分支流水线。运行：
 
 ```bash
-python <skill_dir>/scripts/jk.py jobs --job 'https://ci.example.com/job/my-app/'
-python <skill_dir>/scripts/jk.py jobs --job 'https://ci.example.com/job/my-app/' --depth 2
+python <skill_dir>/scripts/jk.py jobs --job '<JOB_URL>'
+python <skill_dir>/scripts/jk.py jobs --job '<JOB_URL>' --depth 2
 ```
+
+`jobs` 的第一行给出 job 类型：
+
+| 类型 | 含义 | 后续操作 |
+| --- | --- | --- |
+| 多分支流水线 | 根 job 不产生构建。它的子 job 是分支。 | 请用户选择分支。用分支 URL 或 `--child <分支名>`。 |
+| 组织文件夹 | 根 job 不产生构建。子 job 由仓库扫描产生。 | 请用户选择子 job。 |
+| 文件夹 | 根 job 不产生构建。 | 请用户选择子 job。 |
+| 流水线 job / 自由风格 job 等 | 可构建的普通 job。 | 直接运行 `info`。 |
+
+多分支流水线的根 URL 用于 `info`、`history`、`watch`、`trigger` 或 `stop` 时，
+脚本报错并列出分支。不要把这个报错当成“没有构建记录”。
+
+只有多分支流水线的子 job 是分支。分支名包含 `/` 时，用 `--child` 整体传入。
 
 步骤：
 
-1. 把子 job 列表给用户。请用户选择。
+1. 把类型和子 job 列表给用户。请用户选择。
 2. 使用子 job 的 URL，或者使用 `--child <名称>`。
 3. 继续运行 `info`、`history`、`failure` 等命令。
 
@@ -284,7 +307,8 @@ python <skill_dir>/scripts/jk.py info --job 'https://ci.example.com/job/my-app/j
 python <skill_dir>/scripts/jk.py failure --job '<JOB_URL>' --child dev --build 42
 ```
 
-容器 URL 用于 `info` 或 `history` 时，脚本报“容器 job”。报错信息列出子 job 的名称和 URL。
+容器 URL 用于 `info` 或 `history` 时，脚本报错。报错信息给出类型、子 job 的名称和 URL。
+分支 job 没有构建记录时，脚本报“还没有任何构建记录”。这是正常情况。不要改用根 URL 查询。
 
 ### 9.4 分析失败构建
 
@@ -440,7 +464,9 @@ python <skill_dir>/scripts/jk.py tests --job '<JOB_URL>' --json
 1. `failure` 包含 `failed_stages[]`、`exit_codes[]` 和 `log_tail[]`。
 2. `watch --json` 返回 `build` 和 `failure_report`。
 3. `history --json` 返回 `job`、`total` 和 `builds[]`。
-4. `jobs --json` 返回 `job`、`server` 和 `children[]`。
+4. `jobs --json` 返回 `job`、`kind`、`kind_label`、`server` 和 `children[]`。
+   `kind` 为 `multibranch`、`organization-folder`、`folder`、`container` 或 `leaf`。
+   普通 job 的 `children` 为 null。
 5. `saved --json` 返回 `file` 和 `jobs[]`。
 6. `trigger --json` 返回 `job`、`job_url`、`queue` 和 `build`。
 7. `trigger --wait --json` 返回与 `watch --json` 相同的结构。
@@ -456,7 +482,9 @@ python <skill_dir>/scripts/jk.py tests --job '<JOB_URL>' --json
 | 同时匹配多个 server 配置 | 用 `--server <名称>` 指定配置。 |
 | job URL 和 `--server` 不匹配 | 去掉 `--server`，让脚本自动匹配。 |
 | HTTP 401 或 403 | 凭据失效或没有权限。请用户重新运行 `config add`。 |
-| 报“容器 job” | 先运行 `jobs`。再用子 job URL 或 `--child`。 |
+| 报“多分支流水线”或“文件夹” | 先运行 `jobs`。再用子 job URL 或 `--child` 选择分支或子 job。 |
+| 多分支流水线的分支列表为空 | 在 Jenkins 上执行 Scan Multibranch Pipeline。等扫描完成再运行 `jobs`。 |
+| 分支 job 报“还没有任何构建记录” | 该分支还没有构建。先触发构建，或换一个分支。 |
 | 子 job 只显示一层 | 加 `--depth 2`。 |
 | 缺少 `--job` | 用 `saved` 查看列表。再用 `--job` 选择。 |
 | 序号超出范围 | 用 `saved` 查看实际序号。可以编辑 `.jenkins-jobs`。 |

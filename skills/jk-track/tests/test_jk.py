@@ -85,25 +85,37 @@ def synthesize_builds(count=15):
     return builds
 
 
+MULTIBRANCH_CLASS = (
+    "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject"
+)
+WORKFLOW_JOB_CLASS = "org.jenkinsci.plugins.workflow.job.WorkflowJob"
+FOLDER_CLASS = "com.cloudbees.hudson.plugins.folder.Folder"
+ORG_FOLDER_CLASS = "jenkins.branch.OrganizationFolder"
+
+
 def container_payload():
     return {
+        "_class": MULTIBRANCH_CLASS,
         "name": "multi",
         "fullName": "multi",
         "url": f"{BASE_URL}/job/multi/",
         "jobs": [
             {
+                "_class": WORKFLOW_JOB_CLASS,
                 "name": "main",
                 "displayName": "main",
                 "url": f"{BASE_URL}/job/multi/job/main/",
                 "lastBuild": summarize(build_json(12, "SUCCESS", duration=3000)),
             },
             {
+                "_class": WORKFLOW_JOB_CLASS,
                 "name": "feature/login",
                 "displayName": "feature/login",
                 "url": f"{BASE_URL}/job/multi/job/feature%2Flogin/",
                 "lastBuild": summarize(build_json(42, "FAILURE", duration=4000)),
             },
             {
+                "_class": WORKFLOW_JOB_CLASS,
                 "name": "feature/pay",
                 "displayName": "feature/pay",
                 "url": f"{BASE_URL}/job/multi/job/feature%2Fpay/",
@@ -123,6 +135,7 @@ def job_payload():
         last = summarize(current)
         builds = synthesize_builds()
     return {
+        "_class": WORKFLOW_JOB_CLASS,
         "name": "demo",
         "fullName": "demo",
         "url": f"{BASE_URL}/job/demo/",
@@ -193,6 +206,7 @@ TEST_REPORT_128 = {
 def child_job_payload(number, result, name="main", full_name="multi/main", duration=3000):
     build = summarize(build_json(number, result, duration=duration))
     return {
+        "_class": WORKFLOW_JOB_CLASS,
         "name": name,
         "fullName": full_name,
         "url": f"{BASE_URL}/job/multi/job/{name.replace('/', '%2F')}/",
@@ -228,7 +242,32 @@ def route(path):
     if path == "/job/demo/131/wfapi/describe":
         return {"status": "SUCCESS", "stages": [{"name": "构建", "status": "IN_PROGRESS"}]}
     if path == "/job/folder/api/json":
-        return {"name": "folder", "jobs": [{"name": "demo"}]}
+        return {
+            "_class": FOLDER_CLASS,
+            "name": "folder",
+            "fullName": "folder",
+            "jobs": [{"_class": WORKFLOW_JOB_CLASS, "name": "demo", "url": f"{BASE_URL}/job/folder/job/demo/"}],
+        }
+    if path == "/job/org/api/json":
+        return {
+            "_class": ORG_FOLDER_CLASS,
+            "name": "org",
+            "fullName": "org",
+            "jobs": [{"_class": WORKFLOW_JOB_CLASS, "name": "repo-a", "url": f"{BASE_URL}/job/org/job/repo-a/"}],
+        }
+    if path == "/job/empty-multi/api/json":
+        return {
+            "_class": MULTIBRANCH_CLASS,
+            "name": "empty-multi",
+            "fullName": "empty-multi",
+            "jobs": [],
+        }
+    if path == "/job/legacy-multi/api/json":
+        return {
+            "name": "legacy-multi",
+            "fullName": "legacy-multi",
+            "jobs": [{"name": "main", "url": f"{BASE_URL}/job/legacy-multi/job/main/"}],
+        }
     if path == "/job/multi/api/json":
         return container_payload()
     if path == "/job/multi/job/main/api/json":
@@ -239,6 +278,17 @@ def route(path):
         return child_job_payload(42, "FAILURE", name="feature/login", full_name="multi/feature/login", duration=4000)
     if path == "/job/multi/job/feature%2Flogin/42/api/json":
         return build_json(42, "FAILURE", duration=4000)
+    if path == "/job/multi/job/feature%2Fpay/api/json":
+        return {
+            "_class": WORKFLOW_JOB_CLASS,
+            "name": "feature/pay",
+            "fullName": "multi/feature/pay",
+            "url": f"{BASE_URL}/job/multi/job/feature%2Fpay/",
+            "inQueue": False,
+            "lastBuild": None,
+            "lastCompletedBuild": None,
+            "nextBuildNumber": 1,
+        }
     if path == "/crumbIssuer/api/json":
         return {"crumb": CRUMB, "crumbRequestField": "Jenkins-Crumb"}
     if path == "/queue/item/900/api/json":
@@ -520,9 +570,76 @@ def test_jobs_json(capsys):
 def test_info_container_lists_children(capsys):
     assert run("info", "--job", f"{BASE_URL}/job/multi/") == 2
     err = capsys.readouterr().err
-    assert "容器 job" in err
+    assert "多分支流水线" in err
     assert "feature/login" in err
     assert "--child" in err
+
+
+def test_job_kind_labels():
+    assert jk.job_kind({}) == jk.JOB_KIND_LEAF
+    assert jk.job_kind({"_class": WORKFLOW_JOB_CLASS}) == jk.JOB_KIND_LEAF
+    assert jk.job_kind({"jobs": []}) == jk.JOB_KIND_CONTAINER
+    assert jk.job_kind({"_class": FOLDER_CLASS}) == jk.JOB_KIND_FOLDER
+    assert jk.job_kind({"_class": MULTIBRANCH_CLASS}) == jk.JOB_KIND_MULTIBRANCH
+    assert (
+        jk.job_kind({"_class": ORG_FOLDER_CLASS}) == jk.JOB_KIND_ORGANIZATION_FOLDER
+    )
+
+
+def test_jobs_multibranch_label(capsys):
+    assert run("jobs", "--job", f"{BASE_URL}/job/multi/") == 0
+    out = capsys.readouterr().out
+    assert "多分支流水线" in out
+    assert "共 3 个子 job" in out
+
+
+def test_jobs_json_kind(capsys):
+    assert run("jobs", "--job", f"{BASE_URL}/job/multi/", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "multibranch"
+    assert payload["kind_label"] == "多分支流水线"
+
+
+def test_jobs_leaf_label(capsys):
+    assert run("jobs", "--job", job_arg()) == 0
+    out = capsys.readouterr().out
+    assert "流水线 job" in out
+    assert "不是文件夹也不是多分支流水线" in out
+
+
+def test_info_folder_lists_children(capsys):
+    assert run("info", "--job", f"{BASE_URL}/job/folder/") == 2
+    err = capsys.readouterr().err
+    assert "文件夹（Folder）" in err
+    assert "demo" in err
+
+
+def test_info_organization_folder(capsys):
+    assert run("info", "--job", f"{BASE_URL}/job/org/") == 2
+    err = capsys.readouterr().err
+    assert "组织文件夹" in err
+    assert "repo-a" in err
+
+
+def test_info_empty_multibranch(capsys):
+    assert run("info", "--job", f"{BASE_URL}/job/empty-multi/") == 2
+    err = capsys.readouterr().err
+    assert "多分支流水线" in err
+    assert "Scan Multibranch Pipeline" in err
+
+
+def test_info_legacy_container_without_class(capsys):
+    assert run("info", "--job", f"{BASE_URL}/job/legacy-multi/") == 2
+    err = capsys.readouterr().err
+    assert "容器 job" in err
+
+
+def test_info_branch_without_builds(capsys):
+    assert (
+        run("info", "--job", f"{BASE_URL}/job/multi/", "--child", "feature/pay") == 2
+    )
+    err = capsys.readouterr().err
+    assert "还没有任何构建记录" in err
 
 
 def test_child_selection(capsys):
@@ -685,7 +802,7 @@ def test_trigger_child(capsys):
 
 def test_trigger_container_without_child(capsys):
     assert run("trigger", "--job", f"{BASE_URL}/job/multi/") == 2
-    assert "容器 job" in capsys.readouterr().err
+    assert "多分支流水线" in capsys.readouterr().err
 
 
 def test_trigger_dry_run(capsys):
@@ -795,7 +912,7 @@ def test_stop_json(capsys):
 
 def test_stop_container_without_child(capsys):
     assert run("stop", "--job", f"{BASE_URL}/job/multi/") == 2
-    assert "容器 job" in capsys.readouterr().err
+    assert "多分支流水线" in capsys.readouterr().err
 
 
 # ────────────────────────────────────────────────────────────
@@ -956,7 +1073,7 @@ def test_saved_index_selection(capsys):
     assert "#129" in capsys.readouterr().out
 
     assert run("info", "--job", "#2") == 2
-    assert "容器 job" in capsys.readouterr().err
+    assert "多分支流水线" in capsys.readouterr().err
 
 
 def test_saved_short_name(capsys):
