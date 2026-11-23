@@ -10,6 +10,7 @@
     failure   汇总失败原因（失败阶段 + 失败用例 + 日志错误摘录）
     watch     持续跟踪构建，直到结束并输出报告
     config    管理 server 配置（add/list/show/use/remove）
+    token-url 生成个人设置页地址（用于配置 API Token，别名 token）
     saved     列出项目 .jenkins-jobs 中记录的 job（别名 urls）
 
 配置与 job 选择:
@@ -23,6 +24,7 @@ job 类型:
 
 用法示例:
     python jk.py config add ci        # 由用户本人在终端执行
+    python jk.py token-url --job https://ci.example.com/job/my-app/
     python jk.py info --job https://ci.example.com/job/my-app/
     python jk.py history --job https://ci.example.com/job/my-app/ --all
     python jk.py jobs --job https://ci.example.com/job/my-app/
@@ -254,6 +256,11 @@ def validate_server_name(name):
     if not name or not SERVER_NAME_RE.match(name):
         raise JenkinsError("server 配置名称只能包含字母、数字、点、下划线和短横线")
     return name
+
+
+def user_config_url(server_base, user):
+    """个人设置页地址：<根地址>/user/<用户名>/configure（API Token 入口）。"""
+    return f"{server_base.rstrip('/')}/user/{urllib.parse.quote(user, safe='')}/configure"
 
 
 @functools.lru_cache(maxsize=1)
@@ -996,6 +1003,29 @@ def match_server_config(job_url, configs):
     return matches[0][1], matches[0][2]
 
 
+def match_server_config_by_host(url, configs):
+    """只按 scheme/host/port 匹配（用户只给了主机名、配置带 context path 时使用）。"""
+    target = parse_server_base(url)
+    matches = []
+    for name, config in configs.items():
+        base = parse_server_base(config["server"])
+        if (base["scheme"], base["host"], base["port"]) == (
+            target["scheme"],
+            target["host"],
+            target["port"],
+        ):
+            matches.append((len(base["path"]), name, config))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        names = "、".join(item[1] for item in matches if item[0] == matches[0][0])
+        raise JenkinsError(
+            f"同一主机有多个 server 配置（{names}），请用 --server 指定其中之一或在地址中带上路径"
+        )
+    return matches[0][1], matches[0][2]
+
+
 def build_job_url(server_base, raw):
     base = server_base.rstrip("/")
     raw = (raw or "").strip()
@@ -1499,20 +1529,28 @@ def mask_secret(value):
 
 
 def prompt_value(
-    label, default=None, secret=False, allow_empty=False, fallback=None, hint=None
+    prompt,
+    default=None,
+    secret=False,
+    allow_empty=False,
+    fallback=None,
+    header=None,
+    details=None,
 ):
-    if hint:
-        suffix = f"（{hint}）"
-    elif default and not secret:
-        suffix = f" [{default}]"
-    else:
-        suffix = ""
+    """先打印步骤标题和明细，再用短提示读输入，避开长行折行。"""
+    lines = list(details or [])
+    if default and not secret:
+        lines.append(f"回车使用 {default}")
+    if header:
+        print(header)
+    for line in lines:
+        print(f"  {line}")
     while True:
         try:
             raw = (
-                getpass.getpass(f"{label}{suffix}: ")
+                getpass.getpass(f"{prompt}> ")
                 if secret
-                else input(f"{label}{suffix}: ")
+                else input(f"{prompt}> ")
             )
         except EOFError:
             raise JenkinsError(
@@ -1533,25 +1571,49 @@ def prompt_value(
 def config_add(args):
     configs = load_server_configs()
     name = args.name
+    total = 3 if name else 4
+    step = 1
+    print(f"配置 Jenkins server（共 {total} 步）")
+    print(f"内容只保存在本机：{SERVERS_DIR}")
+    print("请由用户本人在终端执行，不要把用户名、API Token 贴到对话里")
     if not name:
         name = prompt_value(
-            "配置名称（用于 --server，如 ci；回车使用 default）", default="default"
+            "配置名称",
+            default="default",
+            header=f"\n步骤 {step}/{total}  配置名称（供 --server 使用）",
+            details=["例如 ci"],
         )
+        step += 1
     validate_server_name(name)
     existing = configs.get(name) or {}
-    print(f"配置 server「{name}」，内容仅保存在本机：{server_file(name)}")
-    print("（请由用户本人在终端执行，不要把用户名、API Token 贴到对话里）\n")
     raw_server = prompt_value(
-        "Jenkins 根地址（如 https://ci.example.com，不要填 job URL）",
+        "根地址",
         default=existing.get("server"),
+        header=f"\n步骤 {step}/{total}  Jenkins 根地址",
+        details=["不要填 job URL", "例如 https://ci.example.com"],
     )
+    step += 1
     server = normalize_server_base(raw_server)
-    user = prompt_value("Jenkins 用户名", default=existing.get("user"))
+    user = prompt_value(
+        "用户名",
+        default=existing.get("user"),
+        header=f"\n步骤 {step}/{total}  Jenkins 用户名",
+        details=["用户 ID，通常等于登录名"],
+    )
+    step += 1
+    token_details = [
+        "需要新建 Token 时，先在浏览器打开个人设置页：",
+        f"  {user_config_url(server, user)}",
+        "登录后：右上角用户名 → Configure → API Token → Add new Token",
+    ]
+    if existing.get("token"):
+        token_details.append("已有保存的 token 时，直接回车沿用")
     token = prompt_value(
-        "API Token（输入不回显）",
+        "API Token",
         secret=True,
         fallback=existing.get("token"),
-        hint="留空沿用已保存的 token" if existing.get("token") else None,
+        header=f"\n步骤 {step}/{total}  API Token（输入不回显）",
+        details=token_details,
     )
     save_server_config(name, server, user, token)
     settings = load_settings()
@@ -1678,6 +1740,138 @@ def cmd_config(args):
         print(f"已删除 server 配置「{name}」")
         return 0
     raise JenkinsError(f"未知的 config 子命令: {action}")
+
+
+USER_PATH_RE = re.compile(r"/user/([^/]+)")
+
+
+def _looks_like_address(raw):
+    """区分地址与普通单词：地址带 scheme、路径、端口或点号。"""
+    return (
+        "://" in raw
+        or "/" in raw
+        or "." in raw
+        or ":" in raw
+        or raw.lower().startswith("localhost")
+    )
+
+
+def parse_token_target(raw):
+    """把用户输入解析为 (Jenkins 根地址, 用户名或 None)。
+
+    支持根地址、job URL、构建页 URL 和个人设置页 URL。context path 保留。
+    """
+    base = parse_server_base(raw)
+    path = base["path"]
+    user = None
+    match = USER_PATH_RE.search(path)
+    if match:
+        user = urllib.parse.unquote(match.group(1))
+        path = path[: match.start()]
+    else:
+        job_index = path.find("/job/")
+        if job_index >= 0:
+            path = path[:job_index]
+    root = urllib.parse.urlunsplit(
+        (base["scheme"], base["netloc"], path.rstrip("/"), "", "")
+    )
+    return root, user
+
+
+def resolve_token_target(args):
+    """确定个人设置页所需的根地址和用户名，返回 (根地址, 用户名, 配置名)。"""
+    configs = load_server_configs()
+    forced = (getattr(args, "server", None) or "").strip()
+    raw = ((getattr(args, "target", None) or getattr(args, "target_job", None)) or "").strip()
+    name, config, root, url_user = None, None, None, None
+
+    if raw and raw in configs:
+        name, config = raw, configs[raw]
+        root = config["server"]
+    elif raw:
+        if not _looks_like_address(raw):
+            raise JenkinsError(
+                f"「{raw}」不是 server 配置名，也不像 Jenkins 地址。\n"
+                "请提供 Jenkins 根地址或 job URL，或用 --server <名称> 指定配置。"
+                + (f"\n现有配置：{'、'.join(configs)}" if configs else "")
+            )
+        root, url_user = parse_token_target(raw)
+    elif forced:
+        name, config = forced, select_server_config(forced)
+        root = config["server"]
+    elif not configs:
+        raise JenkinsError(
+            "还没有任何 Jenkins 配置，也没有提供 Jenkins 地址。\n"
+            "请给出地址（用户名由用户在自己的终端补上）：\n"
+            f"  {SCRIPT_HINT} token-url <Jenkins 根地址> --user <用户名>"
+        )
+    else:
+        default = load_settings().get("default_server")
+        if len(configs) == 1:
+            name = next(iter(configs))
+        elif default in configs:
+            name = default
+        else:
+            listing = "\n".join(
+                f"  - {n}: {c['server']}" for n, c in configs.items()
+            )
+            raise JenkinsError(
+                "有多个 server 配置，请用 --server 指定其中之一：\n" + listing
+            )
+        config = configs[name]
+        root = config["server"]
+
+    if forced:
+        config = select_server_config(forced)
+        if root and not job_under_server(root, config["server"]):
+            raise JenkinsError(
+                f"地址与 --server「{forced}」的根地址不匹配，请去掉 --server 或修改地址"
+            )
+        name, root = forced, config["server"]
+    elif config is None and configs:
+        matched = match_server_config(root, configs)
+        if matched:
+            name, config = matched
+        else:
+            matched = match_server_config_by_host(root, configs)
+            if matched:
+                name, config = matched
+                root = config["server"]
+
+    user = (getattr(args, "user", None) or "").strip() or url_user or (
+        (config or {}).get("user") or ""
+    ).strip()
+    if not user:
+        raise JenkinsError(
+            "无法确定用户名，不能生成个人设置页地址。\n"
+            "请让用户在他/她自己的终端补上用户名：\n"
+            f"  {SCRIPT_HINT} token-url {root} --user <用户名>"
+        )
+    return root, user, name
+
+
+def cmd_token_url(args):
+    root, user, name = resolve_token_target(args)
+    url = user_config_url(root, user)
+    if args.json:
+        print(
+            json.dumps(
+                {"server": name, "server_base": root, "url": url},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    print("Jenkins 个人设置页（配置 API Token）")
+    print(url)
+    print()
+    print(f"Server  {name or '-'}  {root}")
+    print("下一步:")
+    print("1. 浏览器打开上面的地址，先登录 Jenkins。")
+    print("2. 在「API Token」区域点「Add new Token」，生成后立即复制。")
+    print("3. 在自己的终端运行 config add 填入用户名和 Token（Token 输入不回显）:")
+    print(f"   {SCRIPT_HINT} config add {name or '<配置名称，如 ci>'}")
+    return 0
 
 
 def collect_job_rows(children, depth, prefix="", parent_path=""):
@@ -2374,6 +2568,25 @@ def build_parser():
     p_config.add_argument("--json", action="store_true", help="输出 JSON 结构")
     p_config.set_defaults(func=cmd_config)
 
+    p_token = subparsers.add_parser(
+        "token-url",
+        aliases=["token"],
+        help="生成 Jenkins 个人设置页地址（用于配置 API Token）",
+        description="生成个人设置页地址：<根地址>/user/<用户名>/configure",
+    )
+    p_token.add_argument(
+        "target",
+        nargs="?",
+        help="Jenkins 地址、job URL 或 server 配置名（默认使用默认 server）",
+    )
+    p_token.add_argument("--job", dest="target_job", help="同 target，可传 job URL")
+    p_token.add_argument("--server", help="server 配置名称")
+    p_token.add_argument(
+        "--user", help="用户名（默认取匹配配置中的用户名或输入 URL 中的 /user/<用户名>）"
+    )
+    p_token.add_argument("--json", action="store_true", help="输出 JSON 结构")
+    p_token.set_defaults(func=cmd_token_url)
+
     p_saved = subparsers.add_parser(
         "saved",
         aliases=["urls"],
@@ -2532,7 +2745,7 @@ def main(argv=None):
     if interval < 0.2:
         args.interval = 0.2
     try:
-        if args.command in ("config", "saved", "urls"):
+        if args.command in ("config", "saved", "urls", "token-url", "token"):
             return args.func(args)
         job_url, server_name, server_config = resolve_job_target(args)
         args._job_url = job_url

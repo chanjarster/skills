@@ -33,6 +33,9 @@ uv run --with pytest pytest tests/test_jk.py -v
   容器 job 拒绝
 - 凭据：`config add` 交互写入与 600 权限、拒绝把 job URL 当根地址、`config list/show` 掩码、
   `config use/remove`、`config set` 别名
+- `token-url`：从 job URL / 根地址 / 个人设置页 URL / 配置名生成个人设置页地址、context path 保留、
+  只按主机回退匹配、用户名取值优先级与 URL 编码、`--server` 与地址不匹配时拒绝、
+  无配置时用地址 + `--user` 生成、`--json`
 - 项目 `.jenkins-jobs`：自动记录与去重、`--no-save`、`--jobs-file`、注释/空行忽略、
   省略 `--job` 时使用唯一 URL、按序号/短名称选择、`saved` 列表
 - 错误路径：401 认证失败、不属于任何配置的 job URL、多个配置歧义

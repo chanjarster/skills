@@ -8,9 +8,11 @@ description: >-
   支持列出构建历史、子 job 和项目 job 列表。
   支持持续跟踪运行中的构建，直到构建结束。
   支持按 job URL 自动匹配多个 Jenkins 的 server 配置。
+  支持生成 Jenkins 个人设置页 URL，帮助用户配置或更新 API Token。
   当用户提到 Jenkins、job、构建、build、pipeline、构建失败、构建日志、测试报告、
   “等构建跑完”、“看下最新构建”、“#128 为什么失败”、“有哪些分支”、
-  “多分支流水线”、“这个 job 是什么类型”、“触发构建”、“停止构建”、“/jk-track”时使用。
+  “多分支流水线”、“这个 job 是什么类型”、“触发构建”、“停止构建”、
+  “配置 API Token”、“API Token 过期”、“个人设置页”、“/jk-track”时使用。
 ---
 
 # jk-track - Jenkins 构建跟踪
@@ -31,6 +33,8 @@ description: >-
 10. 其他命令只读。它们不改变 Jenkins 状态。
 11. 写操作失败后不要重复提交。先运行 `info` 确认状态。
 12. 回答必须给出 Jenkins 的 Markdown 链接。见 8.2 节。
+13. 用户需要配置或更新 API Token 时，用 `token-url` 生成个人设置页地址。见 4.1 节。
+14. 个人设置页地址包含用户名。这是定位页面所必需。不要在正文中重复用户名。
 
 ## 2. 配置模型
 
@@ -57,10 +61,13 @@ description: >-
 3. `server` 必须是根地址。它可以带 context path，例如 `https://ci.example.com/jenkins`。
 4. 可以配置多个 Jenkins。每个 Jenkins 一个文件。
 5. `settings.json` 可选。它保存 `default_server`。相对 job 名称使用这个值。
+6. `token-url` 用配置中的 `server` 和 `user` 生成个人设置页地址。它不需要 Token。
 
 ## 3. 首次使用
 
 ### 3.1 用户操作
+
+用户还没有 API Token 时，先给出个人设置页地址。见 4.1 节。
 
 请用户在自己的终端运行：
 
@@ -68,7 +75,10 @@ description: >-
 python <skill_dir>/scripts/jk.py config add ci
 ```
 
-脚本依次询问 4 项：配置名称、Jenkins 根地址、用户名、API Token。Token 输入不回显。
+脚本分步询问，输出带「步骤 1/N」标号：配置名称、Jenkins 根地址、用户名、API Token。
+给了配置名称时少一步。Token 输入不回显。
+在 API Token 那一步，脚本先根据前面的根地址和用户名打印个人设置页地址。
+用户就在这个页面创建 Token，不需要另开命令。
 脚本保存文件。文件权限为 600。
 
 ### 3.2 AI 操作
@@ -80,7 +90,7 @@ python <skill_dir>/scripts/jk.py config add ci
 
 ## 4. 配置命令
 
-这些命令由用户在自己的终端运行。
+`config` 命令由用户在自己的终端运行。`token-url` 只生成地址，可以由 AI 运行。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -89,6 +99,57 @@ python <skill_dir>/scripts/jk.py config add ci
 | `config show [<名称>]` | 显示一个配置。Token 不显示。 |
 | `config use <名称>` | 设置默认 server。相对 job 名称使用该值。 |
 | `config remove <名称>` | 删除一个配置。 |
+| `token-url [<地址>]` | 生成个人设置页地址（配置 API Token）。别名 `token`。 |
+
+### 4.1 配置 API Token
+
+用户需要创建、更新或检查 API Token 时，用 `token-url` 生成个人设置页地址。
+地址格式：`<Jenkins 根地址>/user/<用户名>/configure`。脚本不发请求。
+
+```bash
+python <skill_dir>/scripts/jk.py token-url '<JOB_URL>'
+python <skill_dir>/scripts/jk.py token-url https://ci.example.com
+python <skill_dir>/scripts/jk.py token-url --server ci
+python <skill_dir>/scripts/jk.py token-url https://ci.example.com/jenkins --user alice
+python <skill_dir>/scripts/jk.py token-url --server ci --json
+```
+
+输入形式：
+
+| 用户给的内容 | 脚本处理 |
+| --- | --- |
+| job URL、构建页 URL、控制台 URL | 去掉 `/job/...`。保留 context path。 |
+| Jenkins 根地址 | 直接使用。缺少 scheme 时补 `https://`。 |
+| 个人设置页 URL | 从 `/user/<用户名>/` 取出用户名。 |
+| server 配置名称，例如 `ci` | 使用该配置的根地址和用户名。 |
+| 空 | 使用默认 server。只有一个配置时使用该配置。 |
+| 既不是配置名也不像地址的单词 | 脚本报错，并列出已有配置。 |
+
+用户名取值顺序：
+
+1. `--user`。
+2. 输入 URL 中的 `/user/<用户名>`。
+3. 匹配到的 server 配置中的用户名。
+
+规则：
+
+1. context path 保留。`https://ci.example.com/jenkins` 生成 `https://ci.example.com/jenkins/user/<用户名>/configure`。
+2. 用户名必须是 Jenkins 用户 ID，不是显示名。它通常等于登录名。
+3. 输入只有主机名时，脚本只按主机匹配配置。配置带 context path 时，地址使用配置的路径。
+4. 同一主机有多个配置时，脚本报错。此时用 `--server` 指定配置。
+5. 匹配不到配置，也没有 `--user` 时，脚本报错。请用户在自己的终端补 `--user`。不要索取用户名。
+6. `--server` 和地址不匹配时，脚本拒绝生成地址。
+7. 这个命令只读。它不写入 `.jenkins-jobs`，不改变 Jenkins 状态。
+8. 地址包含用户名。回答中给出完整链接，但不要在正文中重复用户名。
+9. `config add` 在询问 API Token 前自动打印同一个地址。用户不需要另开命令。
+
+回答写法（`alice` 是占位，链接用脚本的实际输出）：
+
+```markdown
+打开 [Jenkins 个人设置页](https://ci.example.com/user/alice/configure)，先登录 Jenkins。
+在「API Token」区域点「Add new Token」，生成后立即复制。
+然后在自己的终端运行 `config add ci` 填入用户名和 Token（Token 输入不回显）。
+```
 
 ## 5. 项目 job 列表
 
@@ -172,6 +233,7 @@ python <skill_dir>/scripts/jk.py <COMMAND> --job '<JOB_URL>'
 | `watch` | 跟踪构建，直到构建结束。 | `--next`、`--build N`、`--interval`、`--timeout` |
 | `trigger` | 触发一次构建。 | `--param K=V`、`--child`、`--wait`、`--dry-run` |
 | `stop` | 停止构建。默认最新构建。 | `--build N`、`--wait`、`--dry-run` |
+| `token-url` | 生成个人设置页地址（配置 API Token）。 | `<地址>`、`--server`、`--user` |
 | `saved` | 列出项目 `.jenkins-jobs` 中的 job。 | `--jobs-file`、`--json` |
 
 `--build` 接受 `128`、`#128`、`latest`、`lastCompleted`、`lastFailed` 和 `lastSuccessful`。
@@ -185,6 +247,8 @@ python <skill_dir>/scripts/jk.py <COMMAND> --job '<JOB_URL>'
 | `--jobs-file`、`--no-save` | 项目 job 列表控制 |
 | `--insecure`、`--http-timeout` | HTTPS 证书和 HTTP 超时 |
 | `--json`、`--verbose`、`--no-color`、`--quiet` | 输出控制 |
+
+`saved` 和 `token-url` 不接受上表的 job 选择参数。`token-url` 另接受 `--user`。
 
 `jobs` 命令输出 job 类型和每个子 job 的 URL。可以直接使用这个 URL。也可以使用 `--child <名称>`。
 分支名包含 `/` 时，可以整体传入，例如 `--child feature/login`。
@@ -209,6 +273,7 @@ python <skill_dir>/scripts/jk.py <COMMAND> --job '<JOB_URL>'
 | 等构建结束 | `watch --job <URL>` |
 | 触发构建 | `trigger --job <URL>` |
 | 停止构建 | `stop --job <URL> --build N` |
+| 配置或更新 API Token | `token-url '<URL>'`，见 4.1 节 |
 
 ### 8.2 回答规则
 
@@ -419,6 +484,22 @@ python <skill_dir>/scripts/jk.py stop --job '<JOB_URL>' --build 131 --wait
 7. 不要停止用户没有提到的构建。
 8. 构建用于部署或多人共享时，先向用户确认。
 
+### 9.8 配置 API Token
+
+用户说“token 过期了”“怎么配置 API Token”“一直 401”时：
+
+```bash
+python <skill_dir>/scripts/jk.py token-url --job '<JOB_URL>'
+```
+
+步骤：
+
+1. 运行 `token-url`。把输出中的地址给用户。见 4.1 节。
+2. 说明操作：先登录 Jenkins，在「API Token」区域点「Add new Token」，生成后立即复制。
+3. 请用户在自己的终端运行 `config add <名称>`。Token 输入不回显。
+4. 用户确认后，重新运行之前的命令验证。
+5. 用户还没有任何配置时，请用户给出 Jenkins 地址。也可以用 `token-url <根地址> --user <用户名>`。
+
 ## 10. 多 Jenkins 环境
 
 ```bash
@@ -472,6 +553,7 @@ python <skill_dir>/scripts/jk.py tests --job '<JOB_URL>' --json
 7. `trigger --wait --json` 返回与 `watch --json` 相同的结构。
 8. `stop --json` 返回 `job`、`number`、`url`、`stopped` 和 `http_status`。
 9. JSON 不包含 Token。
+10. `token-url --json` 返回 `server`、`server_base` 和 `url`。未匹配到配置时 `server` 为 null。
 
 ## 13. 故障排查
 
@@ -481,7 +563,11 @@ python <skill_dir>/scripts/jk.py tests --job '<JOB_URL>' --json
 | job URL 不属于任何配置 | 列出已有配置。请用户添加正确的 Jenkins 根地址。 |
 | 同时匹配多个 server 配置 | 用 `--server <名称>` 指定配置。 |
 | job URL 和 `--server` 不匹配 | 去掉 `--server`，让脚本自动匹配。 |
-| HTTP 401 或 403 | 凭据失效或没有权限。请用户重新运行 `config add`。 |
+| HTTP 401 或 403 | 凭据失效或没有权限。用 `token-url` 给出个人设置页地址，请用户重新生成 API Token，再运行 `config add`。 |
+| 需要配置或更新 API Token | 运行 `token-url '<URL>'`。见 4.1 节。 |
+| 不知道个人设置页地址 | `token-url '<JOB_URL>'`，或 `token-url <Jenkins 根地址> --user <用户名>`。 |
+| `token-url` 报“无法确定用户名” | 该地址没有匹配的配置。请用户在自己的终端补 `--user`，或先运行 `config add`。 |
+| `token-url` 报“不匹配” | 去掉 `--server`，或改用该配置的根地址。 |
 | 报“多分支流水线”或“文件夹” | 先运行 `jobs`。再用子 job URL 或 `--child` 选择分支或子 job。 |
 | 多分支流水线的分支列表为空 | 在 Jenkins 上执行 Scan Multibranch Pipeline。等扫描完成再运行 `jobs`。 |
 | 分支 job 报“还没有任何构建记录” | 该分支还没有构建。先触发构建，或换一个分支。 |

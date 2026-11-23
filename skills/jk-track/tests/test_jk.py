@@ -1000,12 +1000,53 @@ def test_config_add_interactive(capsys, monkeypatch):
     assert jk.main(["config", "add", "new"]) == 0
     out = capsys.readouterr().out
     assert "new-token" not in out
+    assert "https://ci.example.com/user/bob/configure" in out
     path = jk.SERVERS_DIR / "new.json"
     data = json.loads(path.read_text("utf-8"))
     assert data["server"] == "https://ci.example.com"
     assert data["user"] == "bob"
     assert data["token"] == "new-token"
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_config_add_prints_token_page(capsys, monkeypatch):
+    answers = iter([f"{BASE_URL}/jenkins", "jia qian"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
+    monkeypatch.setattr(jk.getpass, "getpass", lambda *_: "new-token")
+    assert jk.main(["config", "add", "ctx"]) == 0
+    out = capsys.readouterr().out
+    assert "需要新建 Token 时" in out
+    assert f"{BASE_URL}/jenkins/user/jia%20qian/configure" in out
+    assert "Add new Token" in out
+    assert "new-token" not in out
+
+
+def test_config_add_prompt_lines_are_short(capsys, monkeypatch):
+    prompts = []
+    answers = iter([f"{BASE_URL}/short", "bob"])
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(jk.getpass, "getpass", lambda *_: "tok")
+    assert jk.main(["config", "add", "short"]) == 0
+    out = capsys.readouterr().out
+    # 输入行只放短提示，默认值/示例另起一行，避免长行折行
+    assert prompts == ["根地址> ", "用户名> "]
+    assert "  例如 https://ci.example.com" in out
+    assert f"{BASE_URL}/short/user/bob/configure" in out
+
+
+def test_config_add_shows_default_on_its_own_line(capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    monkeypatch.setattr(jk.getpass, "getpass", lambda *_: "")
+    assert jk.main(["config", "add", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert f"  回车使用 {BASE_URL}" in out
+    assert "  回车使用 user" in out
+    assert "  已有保存的 token 时，直接回车沿用" in out
 
 
 def test_config_add_rejects_job_url(capsys, monkeypatch):
@@ -1030,6 +1071,105 @@ def test_config_use_and_remove(capsys):
     assert jk.main(["config", "remove", "bad"]) == 0
     assert not (jk.SERVERS_DIR / "bad.json").exists()
     assert jk.load_settings()["default_server"] == "demo"
+
+
+# ────────────────────────────────────────────────────────────
+# token-url（个人设置页地址）
+# ────────────────────────────────────────────────────────────
+
+
+def test_token_url_from_job_url(capsys):
+    assert run("token-url", job_arg(), "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["server"] == "demo"
+    assert payload["server_base"] == BASE_URL
+    assert payload["url"] == f"{BASE_URL}/user/user/configure"
+    assert not jobs_file().exists()
+
+
+def test_token_url_keeps_context_path(capsys):
+    assert run("token-url", f"{BASE_URL}/secure/job/demo/", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["server"] == "secure"
+    assert payload["url"] == f"{BASE_URL}/secure/user/alice/configure"
+
+
+def test_token_url_from_user_page(capsys):
+    assert run("token-url", f"{BASE_URL}/user/bob/configure", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["url"] == f"{BASE_URL}/user/bob/configure"
+
+
+def test_token_url_default_server(capsys):
+    assert run("token-url") == 0
+    out = capsys.readouterr().out
+    assert f"{BASE_URL}/user/user/configure" in out
+    assert "API Token" in out
+    assert "config add demo" in out
+
+
+def test_token_url_by_config_name(capsys):
+    assert run("token", "secure", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["url"] == f"{BASE_URL}/secure/user/alice/configure"
+
+
+def test_token_url_host_fallback(capsys):
+    for name in ("demo", "bad", "secure"):
+        jk.SERVERS_DIR.joinpath(f"{name}.json").unlink()
+    write_config("ctx", f"{BASE_URL}/ctx", user="carol")
+    jk.load_server_configs.cache_clear()
+    assert run("token-url", BASE_URL, "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["server"] == "ctx"
+    assert payload["url"] == f"{BASE_URL}/ctx/user/carol/configure"
+
+
+def test_token_url_user_override_is_quoted(capsys):
+    assert run("token-url", "--server", "demo", "--user", "a b", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["url"] == f"{BASE_URL}/user/a%20b/configure"
+
+
+def test_token_url_requires_user(capsys):
+    assert run("token-url", "https://unknown.example.com/job/x/") == 2
+    err = capsys.readouterr().err
+    assert "无法确定用户名" in err
+    assert "--user" in err
+
+
+def test_token_url_rejects_plain_word(capsys):
+    assert run("token-url", "nope") == 2
+    err = capsys.readouterr().err
+    assert "不是 server 配置名" in err
+    assert "demo" in err
+
+
+def test_token_url_server_mismatch(capsys):
+    assert run("token-url", job_arg(), "--server", "secure") == 2
+    assert "不匹配" in capsys.readouterr().err
+
+
+def test_token_url_needs_server_when_ambiguous(capsys):
+    jk.save_settings({})
+    assert run("token-url") == 2
+    err = capsys.readouterr().err
+    assert "请用 --server" in err
+    assert "demo" in err and "secure" in err
+
+
+def test_token_url_without_configs(capsys):
+    for name in ("demo", "bad", "secure"):
+        jk.SERVERS_DIR.joinpath(f"{name}.json").unlink()
+    jk.load_server_configs.cache_clear()
+
+    assert run("token-url") == 2
+    assert "还没有任何 Jenkins 配置" in capsys.readouterr().err
+
+    assert run("token-url", "https://ci.example.com", "--user", "alice", "--json") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["server"] is None
+    assert payload["url"] == "https://ci.example.com/user/alice/configure"
 
 
 # ────────────────────────────────────────────────────────────
